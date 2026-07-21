@@ -13,6 +13,10 @@
 - [ ] (phase 1) Watermark save: use a unique temp name instead of the fixed `watermark.json.tmp`
 - [ ] (phase 1) Config: require `base_dir` to be absolute (a relative value resolves against cwd, which differs between manual and service runs)
 - [ ] (phase 1) Doc-sync (standing rule 1): amend ADR 0001 / DESIGN + diagrams for the index-only `NNNN.zst` filename, the D-04 single-direct-write path, and the nested-transcript `<project>/<session-id>/<sub-path>/` layout
+- [ ] (phase 2) `collect_generations` descends only one hardcoded `subagents/<agent>/` level while `archive_key` files at an arbitrary sub-path (`segments[2..]`); deeper-nested subagents or workflow transcript dirs (ADR 0001 "and below") drop silently. Decide whether to recurse the session dir for every `NNNN.zst`. Intersects Phase 6 sweep wiring and D-05's `subagents/`-only framing
+- [ ] (phase 2) `read_generations` aborts the whole session on one invalid JSON line; a mid-append truncated final line makes an otherwise-complete session emit zero records - consider skip-and-continue per line
+- [ ] (phase 2) `extract.rs` heredoc close matches `trim() == delim`, so an indented delimiter-lookalike inside a plain (non `<<-`) heredoc truncates the artifact early
+- [ ] (phase 2) `extract.rs` fenced-block detection breaks on an inner ``` line or unclosed opening fence, truncating or dropping subsequent fenced artifacts in the same message
 
 ## Seeds
 

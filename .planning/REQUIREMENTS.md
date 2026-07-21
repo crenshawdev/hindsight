@@ -91,10 +91,10 @@ Deferred. Tracked, not in the current roadmap.
 | CAP-04 | Phase 1 | Complete |
 | ARC-01 | Phase 1 | Complete |
 | ARC-02 | Phase 1 | Complete |
-| NRM-01 | Phase 2 | Pending |
-| NRM-02 | Phase 2 | Pending |
-| NRM-03 | Phase 2 | Pending |
-| NRM-04 | Phase 2 | Pending |
+| NRM-01 | Phase 2 | Complete |
+| NRM-02 | Phase 2 | Complete |
+| NRM-03 | Phase 2 | Complete |
+| NRM-04 | Phase 2 | Complete |
 | STO-01 | Phase 3 | Pending |
 | STO-02 | Phase 3 | Pending |
 | STO-03 | Phase 3 | Pending |

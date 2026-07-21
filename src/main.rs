@@ -6,11 +6,13 @@
 mod archive;
 mod config;
 mod daemon;
+mod normalize;
 mod poke;
 mod precompact;
 mod sweep;
 mod watermark;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -34,6 +36,11 @@ enum Command {
     Precompact,
     /// Poke the daemon socket to trigger a sweep.
     Poke,
+    /// Normalize an archived session directory to tagged NDJSON on stdout.
+    Normalize {
+        /// Path to an archived session directory (parent plus nested subagents/).
+        session_dir: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -42,6 +49,7 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Daemon => report(daemon::run()),
         Command::Poke => report(poke::run()),
+        Command::Normalize { session_dir } => report(normalize::run(&session_dir)),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
