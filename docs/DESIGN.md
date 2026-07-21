@@ -235,3 +235,9 @@ None of it is exotic. The reason it works is that a coding assistant's transcrip
 raw material than a pile of documents, it already knows what I did, and most of the memory I wanted
 was sitting in that structure waiting to be read out, exact and cheap, if I just kept the file from
 being deleted first.
+
+The one build decision the design deliberately left open, the language it is all written in, is now
+settled. It is Rust, shipped as a single static binary with the daemon, CLI, and MCP server as
+subcommands, because a small always-on executable is what socket activation wants and rusqlite carries
+SQLite, FTS5, and sqlite-vec as one linked dependency. See
+[ADR 0012](decisions/0012-implementation-language-rust.md).
