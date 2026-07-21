@@ -13,6 +13,70 @@ fn default_idle_timeout_secs() -> u64 {
     900
 }
 
+fn default_ollama_url() -> String {
+    "http://127.0.0.1:11434".to_string()
+}
+fn default_embed_model() -> String {
+    "qwen3-embedding:8b".to_string()
+}
+fn default_keep_alive() -> String {
+    "5m".to_string()
+}
+fn default_gpu_util_busy_pct() -> u32 {
+    30
+}
+fn default_gpu_min_free_mib() -> u64 {
+    6144
+}
+fn default_gpu_defer_poll_secs() -> u64 {
+    60
+}
+fn default_gpu_max_defer_secs() -> u64 {
+    1800
+}
+
+/// The `[embed]` knobs (D-01, D-04, D-05). Every field carries a serde default so
+/// an absent `[embed]` table (or an absent field) yields the shipped defaults and
+/// no config edit is required to run `hindsight embed`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbedConfig {
+    /// Ollama base URL; `/api/embed` is appended (D-01).
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+    /// The embedding model requested (D-01).
+    #[serde(default = "default_embed_model")]
+    pub model: String,
+    /// Ollama `keep_alive`: stays warm across a drain, unloads after (ADR 0004).
+    #[serde(default = "default_keep_alive")]
+    pub keep_alive: String,
+    /// GPU is "busy" at or above this `nvidia-smi` utilization percent (D-04).
+    #[serde(default = "default_gpu_util_busy_pct")]
+    pub gpu_util_busy_pct: u32,
+    /// GPU is "busy" when free VRAM (MiB) is below this (D-04).
+    #[serde(default = "default_gpu_min_free_mib")]
+    pub gpu_min_free_mib: u64,
+    /// Poll interval while deferring on a busy GPU (D-05).
+    #[serde(default = "default_gpu_defer_poll_secs")]
+    pub gpu_defer_poll_secs: u64,
+    /// Total defer budget before falling back to CPU (D-05).
+    #[serde(default = "default_gpu_max_defer_secs")]
+    pub gpu_max_defer_secs: u64,
+}
+
+impl Default for EmbedConfig {
+    fn default() -> Self {
+        Self {
+            ollama_url: default_ollama_url(),
+            model: default_embed_model(),
+            keep_alive: default_keep_alive(),
+            gpu_util_busy_pct: default_gpu_util_busy_pct(),
+            gpu_min_free_mib: default_gpu_min_free_mib(),
+            gpu_defer_poll_secs: default_gpu_defer_poll_secs(),
+            gpu_max_defer_secs: default_gpu_max_defer_secs(),
+        }
+    }
+}
+
 /// Parsed `config.toml`. Shared by every subcommand.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -23,6 +87,11 @@ pub struct Config {
     /// Daemon self-terminates after this many idle seconds with no poke.
     #[serde(default = "default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+
+    /// Embedding knobs (D-01, D-04, D-05). An absent `[embed]` table yields all
+    /// defaults so no config edit is required to run `hindsight embed`.
+    #[serde(default)]
+    pub embed: EmbedConfig,
 }
 
 impl Config {
@@ -171,6 +240,7 @@ mod tests {
         Config {
             base_dir: PathBuf::from(base),
             idle_timeout_secs: 900,
+            embed: EmbedConfig::default(),
         }
     }
 
@@ -192,6 +262,28 @@ mod tests {
     fn idle_timeout_defaults_to_900() {
         let c = Config::from_toml_str("base_dir = \"/data/hindsight\"\n").unwrap();
         assert_eq!(c.idle_timeout_secs, 900);
+    }
+
+    #[test]
+    fn embed_defaults_when_table_absent() {
+        let c = Config::from_toml_str("base_dir = \"/data/hindsight\"\n").unwrap();
+        assert_eq!(c.embed.ollama_url, "http://127.0.0.1:11434");
+        assert_eq!(c.embed.model, "qwen3-embedding:8b");
+        assert_eq!(c.embed.keep_alive, "5m");
+        assert_eq!(c.embed.gpu_util_busy_pct, 30);
+        assert_eq!(c.embed.gpu_min_free_mib, 6144);
+        assert_eq!(c.embed.gpu_defer_poll_secs, 60);
+        assert_eq!(c.embed.gpu_max_defer_secs, 1800);
+    }
+
+    #[test]
+    fn embed_partial_table_keeps_other_defaults() {
+        let c = Config::from_toml_str(
+            "base_dir = \"/data/hindsight\"\n[embed]\ngpu_util_busy_pct = 50\n",
+        )
+        .unwrap();
+        assert_eq!(c.embed.gpu_util_busy_pct, 50);
+        assert_eq!(c.embed.model, "qwen3-embedding:8b");
     }
 
     #[test]
