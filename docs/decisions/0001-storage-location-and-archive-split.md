@@ -29,6 +29,30 @@ Both live under a single configurable base directory on a backed-up volume, neve
 root of that volume. One config key sets the base, and the archive, the index, and the daemon's
 runtime state all sit beneath it.
 
+## Layout under the base
+
+The archive is a directory per session, not one big blob. Each captured session lives at
+`<base>/archive/<project>/<session-id>/`, and every capture drops a numbered, timestamped,
+zstd-compressed generation into it next to a `meta.json` that records the source path and, per
+generation, its timestamp, uncompressed size, and sha256. A session that grows gets a new
+generation, a compaction rewrite gets a new generation with the old one kept, and nothing already
+written is ever touched again. The write-once rule lives on the generation, the session directory
+just accumulates them.
+
+Mapping a transcript file to that `<project>/<session-id>` pair is less obvious than it looks,
+because the tree is not flat. Claude Code writes the top-level session at
+`projects/<project>/<session-id>.jsonl`, but a session that spawns subagents or runs a workflow
+writes those transcripts a level deeper, at `projects/<project>/<session-id>/subagents/agent-<id>.jsonl`
+and below. On my own machine 815 of 1430 transcript files, 57 percent of them, sit at that deeper
+level. The naive read, take the parent directory as the project and the filename as the session,
+files every one of those subagent logs under a project literally named `subagents` and cuts it off
+from the session it belongs to. So the rule is anchored to the tree root instead: the project is the
+first path segment under `projects/`, the session is the second, and anything past that is carried
+through as a sub-path, so the file lands at `<base>/archive/<project>/<session-id>/<sub-path>/`,
+grouped under the real session where the normalize phase expects to find it. The sweep and the
+`PreCompact` hook both go through the same mapping, because two different answers to "where does this
+file belong" is a bug waiting for the first subagent compaction.
+
 ## Alternatives considered
 
 **One combined store.** Simpler on paper, but it forces the durable and the disposable to share a
@@ -59,3 +83,9 @@ the archive while scrubbing them from the index ([ADR 0008](0008-secrets-scrub-i
 depends on the archive being the untouched ground truth, and preserving pre-compaction content
 ([ADR 0011](0011-hooks-and-daemon-knobs.md)) depends on the archive keeping generations rather than
 overwriting.
+
+Because the project and session names come off a file path and a hook payload, the mapping treats
+them as untrusted. The segments are anchored to the tree root, and a `.`, a `..`, or a segment
+carrying a path separator is rejected rather than walked, so a malformed or hostile name cannot steer
+a write outside the base directory. That is the runtime half of ARC-02, the config half being the
+base directory itself refusing to sit at a volume root.
