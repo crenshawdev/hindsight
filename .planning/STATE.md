@@ -1,6 +1,6 @@
 # State
 
-Phase: 1 of 6 (Capture)
-Status: phase complete
-Next: /cad-context 2 (Phase 2: Normalize)
+Phase: 2 of 6 (Normalize)
+Status: context gathered
+Next: /cad-plan 2
 Updated: 2026-07-21
