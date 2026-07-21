@@ -57,3 +57,13 @@ sharpen both instead of competing with them. Resolving hits to verbatim archive 
 the specific failure this project was built against, a memory that can only tell you a script once
 existed. An optional query-time re-rank of the top handful of fuzzy hits, run locally, is left as
 additive enrichment for the hardest name-recall cases, never in ingest.
+
+## Amendment (2026-07-21): how the ranked path executes, measured
+
+The pre-filter-then-rank shape here is right, and the storage stress test in
+[ADR 0006](0006-storage-engine-sqlite.md) pinned down how it actually runs. Anchored queries filter
+in SQL and exact-rerank the survivors, which is both correct and cheap because the survivor set is
+small. The unfiltered "find the thing I can't name" case, the one with no structural anchor to shrink
+it, is the governing latency case and runs on a binary-coarse plus full-precision-rescore pass over
+the whole vector set. Reciprocal-rank fusion then combines the keyword and vector rankings as
+described. End to end the ranked path measured p95 11 ms in one file.

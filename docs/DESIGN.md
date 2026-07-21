@@ -148,7 +148,7 @@ in an afternoon anyway. Gaming killed the idea of a warm resident model, not the
 [ADR 0004](decisions/0004-embedder-and-gpu-scheduling.md).
 
 The model is qwen3-embedding:8b, quantized, run locally through Ollama. The data is tiny, a couple
-hundred thousand records and maybe twenty-odd thousand vectors, so this is a fits-in-memory problem,
+hundred thousand records and on the order of fifty thousand vectors and growing, so this is a fits-in-memory problem,
 not a scaling one, and running the best local model I can fit costs nothing extra at this size. Local
 also closes the one privacy gap that mattered, because the transcripts already went to Anthropic by
 existing at all, but sending them to a third-party embedding API would be handing a brand new party a
@@ -156,24 +156,33 @@ coherent index of everything I have built, and I would rather not.
 
 ## Holding it in one boring file
 
-For the store, the data being tiny is the deciding fact. Twenty thousand vectors is not a database-
-server problem, it is a single-file problem, and standing up a vector service for it would be
-absurd. It is also derived and disposable, so durability does not matter, only simplicity and query
-power.
+For the store, the data staying small is the deciding fact. Fifty-odd thousand vectors growing
+slowly is not a database-server problem, it is a single-file problem, and standing up a vector
+service for it would be absurd. It is also derived and disposable, so durability does not matter
+here, only simplicity and query power.
 
 SQLite holds all of it. The relational records, joins, and filters are exactly what SQLite is for.
 Full-text search with proper keyword ranking comes built in through its FTS5 module, which quietly
 deleted a whole component I thought I would need to pick. The vectors sit alongside in the same file
-through an extension, and at this size an exact scan is instant, so I may not even need an
-approximate index. One embedded file, no server, rebuildable in a single pass.
+through an extension. I first assumed a plain exact scan would be fast enough to skip an approximate
+index, and a stress test on the real vectors corrected that, a single-threaded float scan over
+4096-dimensional vectors holds an interactive bar only up to about sixty-five thousand of them, and
+the real count is already past that on the way up. The fix stayed inside the file. Unfiltered fuzzy
+queries run a binary-coarse pass and then rescore the candidates at full precision, which holds the
+bar out to half a million vectors in a sixteen-megabyte index at essentially the same recall as
+exact. One embedded file, no server, rebuildable in a single pass.
 
 The clincher was the query model. Recall narrows by structural facts first, this project, this
 week, this file, and then ranks what is left. When the filter and the keyword search and the vector
-search all live in one store, that is one query. Split across three specialized stores it becomes a
-filter here, pass a set of ids there, fuse across a process boundary, all for twenty thousand
-vectors. Not worth it. And because the whole thing is rebuildable, if it ever genuinely outgrows
-SQLite I re-derive into whatever is next from the same archive, at no risk. See
-[ADR 0006](decisions/0006-storage-engine-sqlite.md).
+search all live in one store, that is one query. For the anchored queries that carry a filter, the
+filter runs in SQL and the vector step exact-reranks the survivors, which is cheap because the
+survivor set is small, and the unanchored fuzzy query is the one that needs the coarse-then-rescore
+pass over everything. Split across three specialized stores this becomes a filter here, pass a set
+of ids there, fuse across a process boundary, all for a corpus this size, and a bench of usearch,
+LanceDB, and DuckDB on the real vectors came back the same way, none of them beat the one boring file
+once anchored queries and footprint and their weaker relational halves were counted. And because the
+whole thing is rebuildable, if it ever genuinely outgrows SQLite I re-derive into whatever is next
+from the same archive, at no risk. See [ADR 0006](decisions/0006-storage-engine-sqlite.md).
 
 ## Two ways to ask
 

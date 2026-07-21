@@ -1,6 +1,6 @@
 # 0001 - Storage location and the archive / index split
 
-Status: accepted
+Status: accepted (amended 2026-07-21, see Amendment)
 
 ## Context
 
@@ -89,3 +89,42 @@ them as untrusted. The segments are anchored to the tree root, and a `.`, a `..`
 carrying a path separator is rejected rather than walked, so a malformed or hostile name cannot steer
 a write outside the base directory. That is the runtime half of ARC-02, the config half being the
 base directory itself refusing to sit at a volume root.
+
+## Amendment (2026-07-21): what a red-team pass tightened
+
+An adversarial review of this record found real gaps the "pure function of the archive" framing
+papered over. The split itself held, no alternative beat it, but five things needed saying that the
+original text left implicit.
+
+**The index is not a pure function of the archive alone, it is a function of the archived bytes plus
+the versioned normalize, scrub, and embed code.** A rebuild reproduces the index only for a fixed
+version of that code, so each build stamps the scrub-ruleset, parser, and embedder-model versions it
+ran, and a loosened scrubber that starts re-indexing a credential shape is caught by a secret-scan
+gate on rebuild rather than shipping silently.
+
+**Writes to the archive are atomic, and the integrity hash is actually checked.** A generation
+commits by writing the compressed blob, fsyncing it, then recording it, so a crash mid-write cannot
+leave a torn generation the manifest trusts. The per-generation sha256 is verified against the blob
+at rebuild and on a periodic pass, because an integrity hash that nothing ever reads is decoration.
+The manifest moves to a per-generation write-once sidecar written alongside its blob, so there is no
+single mutable meta.json whose torn rewrite orphans every prior generation at once.
+
+**The watermark is a third durability class the two-box split never named.** It is disposable and
+regenerable by replay, and the replay is safe because archive dedup is keyed on content sha256, so a
+lost watermark triggers an idempotent re-sweep that adds nothing already stored. Naming it is the
+difference between "recoverable" and "recoverable if you happen to know the dedup rule."
+
+**One rebuild input lives outside the archive, and it is captured now.** Human-readable project
+identity comes from the prompt-history decode map in the live tree, which is exactly what is gone in
+the disaster the archive exists to survive. The resolved project path is snapshotted into the
+generation metadata at capture, so a from-archive rebuild keeps real project names instead of
+degrading to the munged directory form.
+
+**The backup argument was overclaimed.** Both this split and a single combined store need the index
+excluded from backup, since both sit under the base directory on the backed-up volume, so the split
+does not "remove the coupling entirely." Its real advantages over one store are corruption isolation
+and lifecycle clarity, and the generational tree earns its place on incremental-backup friendliness
+and per-generation isolation, not on backup-freedom. Generations are also full-file snapshots with no
+prune rule, fine at the clear-at-twenty-percent rhythm but worth naming, and a full re-embed scales
+with the corpus, so semantic recall is degraded, not absent, during a rebuild while exact and keyword
+search stay current.

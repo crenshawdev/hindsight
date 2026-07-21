@@ -15,6 +15,16 @@ one store; a two-path query interface (exact listing plus RRF-fused ranked searc
 and a CLI; backfill as an empty-watermark sweep; a synchronous PreCompact snapshot and a 15-minute idle
 daemon; and the whole system built in Rust as one static binary with daemon, CLI, and MCP subcommands.
 
+Three of those ADRs were amended on 2026-07-21, after a stress test on the real corpus and an
+adversarial review of the design. The store stays SQLite, but the vector approach is now
+binary-coarse plus full-precision rescore for unfiltered queries and filter-then-exact-rerank for
+anchored ones, not a plain exact scan, because the real indexed count is about 55,000 vectors and
+growing, not the twenty thousand first assumed, and a single-threaded float scan breaks past 65,000.
+See [ADR 0006](decisions/0006-storage-engine-sqlite.md) for the measurements, and
+[ADR 0001](decisions/0001-storage-location-and-archive-split.md) and
+[ADR 0003](decisions/0003-normalize-event-grain.md) for the archive-integrity and grain amendments
+from the same pass.
+
 ## Open, not yet decided
 
 These are the calls that were deliberately left for build time.
