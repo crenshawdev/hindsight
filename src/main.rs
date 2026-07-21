@@ -9,6 +9,7 @@ mod daemon;
 mod normalize;
 mod poke;
 mod precompact;
+mod store;
 mod sweep;
 mod watermark;
 
