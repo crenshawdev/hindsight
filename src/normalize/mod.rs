@@ -5,6 +5,7 @@
 //! config file.
 
 mod model;
+mod parse;
 
 use std::io::Write;
 use std::path::Path;
@@ -41,19 +42,53 @@ fn run_to<W: Write>(session_dir: &Path, w: &mut W) -> Result<()> {
         })?
         .to_string();
 
-    // Parent generations only for Task 1's minimal session; nested subagents
-    // join in Task 2.
-    let generations = read_generations(session_dir)?;
+    // One logical Session = the parent generations plus every nested
+    // `subagents/` generation under the same session dir (D-05).
+    let generations = collect_generations(session_dir)?;
 
     let session = build_session(&project, &generations)?;
+    let session_id = session.session_id.clone();
 
-    let records = vec![Record::Session(session)];
+    let gen_lines: Vec<Vec<Value>> = generations.into_iter().map(|g| g.lines).collect();
+    let events = parse::assemble_events(&gen_lines, &session_id);
+
+    let mut records = Vec::with_capacity(1 + events.len());
+    records.push(Record::Session(session));
+    records.extend(events.into_iter().map(Record::Event));
     model::write_ndjson(&records, w)
+}
+
+/// Read the parent session dir's generations plus every nested subagent
+/// directory's generations (`subagents/<agent>/NNNN.zst`), parent first.
+fn collect_generations(session_dir: &Path) -> Result<Vec<Generation>> {
+    let mut generations = read_generations(session_dir, "")?;
+
+    let subagents = session_dir.join("subagents");
+    if subagents.is_dir() {
+        let mut subdirs: Vec<std::path::PathBuf> = std::fs::read_dir(&subagents)
+            .with_context(|| format!("reading {}", subagents.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        subdirs.sort();
+        for subdir in subdirs {
+            let name = subdir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let prefix = format!("subagents/{name}");
+            generations.extend(read_generations(&subdir, &prefix)?);
+        }
+    }
+    Ok(generations)
 }
 
 /// Decompress and parse every `NNNN.zst` generation in `dir`, sorted by
 /// filename. Skips dotfiles and `meta.json` (mirrors `archive::scan_generations`).
-fn read_generations(dir: &Path) -> Result<Vec<Generation>> {
+/// `rel_prefix` labels each generation's `filename` for `archive_refs` (empty
+/// for the parent dir, `subagents/<agent>` for a nested one).
+fn read_generations(dir: &Path, rel_prefix: &str) -> Result<Vec<Generation>> {
     let mut names: Vec<String> = Vec::new();
     let rd = std::fs::read_dir(dir)
         .with_context(|| format!("reading session dir {}", dir.display()))?;
@@ -94,7 +129,15 @@ fn read_generations(dir: &Path) -> Result<Vec<Generation>> {
             })?;
             lines.push(value);
         }
-        generations.push(Generation { filename, lines });
+        let label = if rel_prefix.is_empty() {
+            filename
+        } else {
+            format!("{rel_prefix}/{filename}")
+        };
+        generations.push(Generation {
+            filename: label,
+            lines,
+        });
     }
     Ok(generations)
 }
@@ -198,8 +241,9 @@ mod tests {
 
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 1, "exactly one line emitted");
+        assert!(!lines.is_empty(), "at least the session line emitted");
 
+        // The session is always the first emitted record.
         let value: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(value["type"], "session");
         assert_eq!(value["session_id"], "sess-1");
