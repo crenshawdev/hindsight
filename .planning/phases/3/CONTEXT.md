@@ -42,11 +42,18 @@ gating the rest.
   skeleton and archive-only bodies and Mention entities never feed FTS5. Evidence: src/normalize/grain.rs
   (skeleton text blanked to None), src/normalize/model.rs `scrub_indexed`,
   docs/decisions/0003-normalize-event-grain.md.
-- D-05 (Table topology): Each type gets its own table keyed on its natural id - Session by `session_id`,
-  Event by `uuid`, Artifact by `artifact_id`. Mention gets a synthetic autoincrement rowid (no natural
-  unique key; genuine duplicate references, e.g. two Read blocks on one path in one event, must survive).
-  Evidence: src/normalize/model.rs (Session/Event/Artifact ids; Mention none), src/normalize/extract.rs
-  (one Mention per Read/Edit/Write block).
+- D-05 (Table topology): Each type gets its own table. Session keyed by `session_id`, Artifact by
+  `artifact_id`. **Amended (phase 3 execution):** Event is NOT keyed by `uuid`. Normalize emits one
+  Event per content block and every block of a line carries that line's `uuid` (src/normalize/parse.rs:157,
+  test `assistant_blocks_expand_to_three_events`), so a natural-key PK on `uuid` rejects any multi-block
+  assistant turn. Event gets a synthetic autoincrement `id` (like Mention), with `uuid` kept as a
+  NOT NULL, non-unique indexed column referencing the source line. Mention likewise uses a synthetic
+  autoincrement rowid (no natural unique key; genuine duplicate references, e.g. two Read blocks on one
+  path in one event, must survive). Consequence: joins on `event.uuid` (artifact.source_event_uuid,
+  mention.event_uuid) resolve a source line, not a single block, so one `uuid` can match several Event
+  rows that share a `session_id` - PLAN-3's artifact->FTS join uses SELECT DISTINCT. Evidence:
+  src/normalize/model.rs, src/normalize/parse.rs:157, src/normalize/extract.rs (one Mention per
+  Read/Edit/Write block).
 - D-06 (Mention inventory): Mention is the standalone entity-inventory table carrying denormalized
   `session_id` + `project` per row, so exact-listing ("every session that touched file X") runs off it
   directly without joining Event/Session. Evidence: src/normalize/model.rs (Mention fields),
