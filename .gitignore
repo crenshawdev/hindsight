@@ -6,3 +6,6 @@ CLAUDE.md
 
 # Obsidian vault config (personal editor state)
 .obsidian/
+
+# JetBrains IDE config (personal editor state)
+.idea/
