@@ -22,9 +22,12 @@ use crate::store::open_db;
 /// Tables cleared at the start of every load so the DB rebuilds from empty
 /// (D-10). `vec_embedding` is included even though this phase never inserts a
 /// vector, so a Phase-4 reload cannot leave orphaned vectors behind stale
-/// relational rows. `meta` is deliberately NOT here - its provenance stamp
-/// survives a reload and is re-seeded idempotently by the schema.
-const FRESH_BUILD_TABLES: [&str; 5] = ["session", "event", "artifact", "mention", "vec_embedding"];
+/// relational rows. `fts` is cleared in step with the relational tables so a
+/// reload rebuilds the FTS index with no stale rows from a prior load. `meta` is
+/// deliberately NOT here - its provenance stamp survives a reload and is
+/// re-seeded idempotently by the schema.
+const FRESH_BUILD_TABLES: [&str; 6] =
+    ["session", "event", "artifact", "mention", "vec_embedding", "fts"];
 
 /// Entry point: open the DB at `cfg.db_path()` and load the NDJSON stream on
 /// stdin into it.
@@ -55,6 +58,20 @@ fn run_from<R: Read>(cfg: &Config, reader: R) -> Result<()> {
         insert_record(&tx, &record)
             .with_context(|| format!("inserting record from NDJSON line {}", i + 1))?;
     }
+
+    // Artifact FTS5 post-pass (D-04). An Artifact carries no `session_id`, only
+    // `source_event_uuid`, and events are not guaranteed to precede their
+    // artifact in the stream, so the session_id is resolved by a set-based join
+    // AFTER the record loop - order-independent. `source_event_uuid` can match
+    // several event rows sharing one uuid (amended D-05), all with the same
+    // session_id, so SELECT DISTINCT keeps each artifact to exactly one FTS row.
+    tx.execute(
+        "INSERT INTO fts(content, session_id, source_type, source_id)
+         SELECT DISTINCT a.content, e.session_id, 'artifact', a.artifact_id
+         FROM artifact a JOIN event e ON e.uuid = a.source_event_uuid",
+        [],
+    )
+    .context("populating artifact fts rows")?;
 
     tx.commit().context("committing load transaction")?;
     Ok(())
@@ -113,6 +130,20 @@ fn insert_record(tx: &Transaction, record: &Record) -> Result<()> {
                 ],
             )
             .context("inserting event row")?;
+
+            // FTS5 (D-04): only indexed-grain events with a body feed the term
+            // index. Guarding on `grain == Indexed` (not just `text.is_some()`)
+            // means a future non-blanked skeleton body still cannot leak in.
+            if e.grain == Grain::Indexed {
+                if let Some(text) = &e.text {
+                    tx.execute(
+                        "INSERT INTO fts(content, session_id, source_type, source_id)
+                         VALUES (?1, ?2, 'event', ?3)",
+                        params![text, e.session_id, e.uuid],
+                    )
+                    .context("inserting event fts row")?;
+                }
+            }
         }
         Record::Artifact(a) => {
             tx.execute(

@@ -2,9 +2,10 @@
 //! provenance/version stamp. Applied idempotently on every `open_db` so a
 //! fresh-build load (D-10) and a reopen both land on the same shape (D-11).
 //!
-//! FTS5 is deliberately absent here - PLAN-3 owns the FTS5 table and its
-//! triggers. The `vec_embedding` table is created empty this phase (D-07);
-//! vectors arrive in Phase 4.
+//! The FTS5 (BM25) index lives here too (PLAN-3): a `content`-only tokenized
+//! column with UNINDEXED mapping columns back to the source session and record.
+//! The loader populates it in the same pass (D-04). The `vec_embedding` table is
+//! created empty this phase (D-07); vectors arrive in Phase 4.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -91,6 +92,22 @@ pub fn apply(conn: &Connection) -> Result<()> {
         ",
     )
     .context("creating relational tables")?;
+
+    // FTS5 (BM25) index (D-04). `content` is the only tokenized column so BM25
+    // ranks on it; the UNINDEXED columns carry the mapping back to the source
+    // session and record without polluting the term index. Available because
+    // rusqlite's bundled SQLite is compiled with -DSQLITE_ENABLE_FTS5 (PLAN-1);
+    // a "no such module: fts5" here would be a bundled-build gap, not a schema
+    // problem.
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
+             content,
+             session_id  UNINDEXED,
+             source_type UNINDEXED,
+             source_id   UNINDEXED
+         );",
+    )
+    .context("creating fts5 index")?;
 
     // Empty 4096-dim float vector table (D-07). Populated in Phase 4; the
     // two-stage rerank companion is Phase 4's concern.
