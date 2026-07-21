@@ -101,7 +101,8 @@ pub fn run_at(config: &Config, sweep_root: &Path) -> Result<usize> {
 }
 
 /// Resolve the sweep root: `$CLAUDE_CONFIG_DIR` else `~/.claude` (D-09).
-fn sweep_root() -> Result<PathBuf> {
+/// Shared with the PreCompact path so both map transcript paths identically.
+pub(crate) fn sweep_root() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|x| !x.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
