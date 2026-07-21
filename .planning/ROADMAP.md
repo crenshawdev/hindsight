@@ -14,7 +14,7 @@ it.
 
 ## Phases
 
-- [ ] **Phase 1: Capture** - socket-activated daemon that archives every session verbatim before cleanup
+- [x] **Phase 1: Capture** - socket-activated daemon that archives every session verbatim before cleanup
 - [ ] **Phase 2: Normalize** - parse archived transcripts into the four record types with grain and scrubbing
 - [ ] **Phase 3: Store** - persist records into one SQLite file with FTS5 and sqlite-vec
 - [ ] **Phase 4: Fuzzy** - synthetic profiles embedded via Ollama into sqlite-vec

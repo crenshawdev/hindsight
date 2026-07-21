@@ -85,12 +85,12 @@ Deferred. Tracked, not in the current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CAP-01 | Phase 1 | Pending |
-| CAP-02 | Phase 1 | Pending |
-| CAP-03 | Phase 1 | Pending |
-| CAP-04 | Phase 1 | Pending |
-| ARC-01 | Phase 1 | Pending |
-| ARC-02 | Phase 1 | Pending |
+| CAP-01 | Phase 1 | Complete |
+| CAP-02 | Phase 1 | Complete |
+| CAP-03 | Phase 1 | Complete |
+| CAP-04 | Phase 1 | Complete |
+| ARC-01 | Phase 1 | Complete |
+| ARC-02 | Phase 1 | Complete |
 | NRM-01 | Phase 2 | Pending |
 | NRM-02 | Phase 2 | Pending |
 | NRM-03 | Phase 2 | Pending |

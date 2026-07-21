@@ -1,5 +1,11 @@
+# Rust build output
+/target
+
 # Local Claude Code project instructions (kept out of the public repo)
 CLAUDE.md
 
 # Obsidian vault config (personal editor state)
 .obsidian/
+
+# JetBrains IDE config (personal editor state)
+.idea/

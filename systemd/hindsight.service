@@ -1,0 +1,10 @@
+[Unit]
+Description=Hindsight capture daemon
+
+[Service]
+Type=simple
+# ExecStart must be the absolute path of your installed `hindsight` binary.
+# The default below assumes `~/.local/bin/hindsight`; edit it to match your
+# install location. The daemon inherits the listening socket from
+# hindsight.socket via socket activation.
+ExecStart=%h/.local/bin/hindsight daemon
