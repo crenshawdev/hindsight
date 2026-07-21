@@ -66,3 +66,15 @@ model's answer text, never from tool results. See [ADR 0005](0005-profile-constr
 
 The secrets scrub runs here, on the way into the index, while the archive stays verbatim
 ([ADR 0008](0008-secrets-scrub-index-only.md)).
+
+## Amendment (2026-07-21): the tiers, measured
+
+Running the real corpus through this grain put numbers on it. Across 1,446 transcript files the
+indexed tier takes 24,766 prose chunks and 29,920 tool-call invocations, while the skeleton tier
+holds 29,917 tool-result bodies and 18,651 private-reasoning blocks back out of the embeddings. The
+skeleton tier is doing exactly what it was built for, it keeps roughly 49,000 vectors of file-dump
+and reasoning noise out of the store and nearly halves the indexed vector count. Worth noting for
+later tuning, the tool-call invocations are the larger half of what does get embedded, so if they
+ever prove more noise than signal, moving them to skeleton is a cheap lever that halves the vector
+total again, and the storage stress test in [ADR 0006](0006-storage-engine-sqlite.md) holds at either
+count.
