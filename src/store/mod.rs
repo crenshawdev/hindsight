@@ -1,11 +1,12 @@
-//! The SQLite store: schema definition and the `open_db` entry point (PLAN-2).
-//! The NDJSON loader (`load`) is added in Task 4.
+//! The SQLite store: schema definition, the `open_db` entry point, and the
+//! NDJSON `load`er behind `hindsight load` (PLAN-2).
 //!
 //! One file holds the relational records, an empty `vec0` vector table, and a
 //! provenance stamp. sqlite-vec is statically linked into rusqlite's bundled
 //! SQLite (PLAN-1) and registered via `sqlite3_auto_extension`, never a runtime
 //! `.so`.
 
+pub mod load;
 pub mod schema;
 
 use std::path::Path;
