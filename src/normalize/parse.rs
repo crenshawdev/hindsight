@@ -78,10 +78,10 @@ pub fn assemble_events(generations: &[Vec<Value>], session_id: &str) -> Vec<Even
         None
     };
 
-    // Pass 2: expand each whitelisted message line into Events.
+    // Pass 2: expand each whitelisted, non-archive-only message line into Events.
     let mut events = Vec::new();
     for line in &ordered {
-        if !is_message_line(line) {
+        if !is_message_line(line) || super::grain::is_archive_only_line(line) {
             continue;
         }
         expand_line(line, session_id, &tool_names, &session_agent_type, &mut events);
@@ -153,9 +153,7 @@ fn expand_line(
                     text: Option<String>,
                     tool_name: Option<String>,
                     is_error: Option<bool>| {
-        // Grain is a placeholder here; Task 3 assigns the real three-tier grain
-        // and drops archive-only events during this expansion.
-        events.push(Event {
+        let mut event = Event {
             uuid: uuid.clone(),
             parent_uuid: parent_uuid.clone(),
             session_id: sess.clone(),
@@ -170,7 +168,10 @@ fn expand_line(
             agent_id: agent_id.clone(),
             agent_type: agent_type.clone(),
             grain: Grain::Indexed,
-        });
+        };
+        // Assign the real three-tier grain and blank skeleton bodies.
+        super::grain::apply_grain(&mut event);
+        events.push(event);
     };
 
     let content = line.get("message").and_then(|m| m.get("content"));

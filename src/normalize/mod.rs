@@ -4,6 +4,7 @@
 //! is a direct archive directory path so the command is inspectable without a
 //! config file.
 
+mod grain;
 mod model;
 mod parse;
 
