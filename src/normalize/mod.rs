@@ -8,6 +8,7 @@ mod extract;
 mod grain;
 mod model;
 mod parse;
+mod scrub;
 
 use std::io::Write;
 use std::path::Path;
@@ -60,6 +61,9 @@ fn run_to<W: Write>(session_dir: &Path, w: &mut W) -> Result<()> {
     records.extend(events.into_iter().map(Record::Event));
     records.extend(artifacts.into_iter().map(Record::Artifact));
     records.extend(mentions.into_iter().map(Record::Mention));
+
+    // Scrub fixed-pattern secrets from indexed free-text before emission (D-08).
+    model::scrub_indexed(&mut records);
     model::write_ndjson(&records, w)
 }
 

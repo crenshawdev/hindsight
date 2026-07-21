@@ -100,6 +100,26 @@ pub enum Record {
     Mention(Mention),
 }
 
+/// Scrub fixed-pattern secrets from the free-text indexed fields only (D-08):
+/// Event `text` on indexed events and Artifact `content`. Skeleton bodies are
+/// already blanked, Mention entities are structural identifiers left intact, and
+/// the archive is never touched by this command.
+pub fn scrub_indexed(records: &mut [Record]) {
+    for record in records {
+        match record {
+            Record::Event(event) if event.grain == Grain::Indexed => {
+                if let Some(text) = event.text.take() {
+                    event.text = Some(super::scrub::scrub(&text));
+                }
+            }
+            Record::Artifact(artifact) => {
+                artifact.content = super::scrub::scrub(&artifact.content);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Write each record as one compact JSON line (tagged NDJSON).
 pub fn write_ndjson<W: Write>(records: &[Record], w: &mut W) -> Result<()> {
     for record in records {
