@@ -6,7 +6,7 @@
 
 mod extract;
 mod grain;
-mod model;
+pub(crate) mod model;
 mod parse;
 mod scrub;
 
