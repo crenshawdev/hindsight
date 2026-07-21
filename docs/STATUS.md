@@ -41,8 +41,18 @@ Roughly bottom-up, each step independently testable against the archive.
 5. Fuzzy: profile construction, Ollama embedding with the GPU-deferral scheduling, vectors into
    sqlite-vec.
 6. Query: the two-path core, RRF fusion, archive resolution, then the MCP server and the CLI over it.
-7. Backfill: raise the retention window first, then run the empty-watermark sweep newest-first.
+7. Backfill: raise the retention window first (already done, see below), then run the empty-watermark
+   sweep newest-first.
 8. Cutover: wire the hooks, disable the prior background memory tool.
+
+## Already done ahead of build
+
+- **Retention window raised.** Claude Code's transcript cleanup, `cleanupPeriodDays` in the user
+  settings, is set to 36500 days, up from the default 30. This is the [ADR 0010](decisions/0010-backfill-coldstart-sweep.md)
+  precondition pulled forward, because the oldest transcripts were within days of the 30-day cleanup and
+  the daemon that would archive them does not exist yet. It stops the loss now and takes effect at the
+  next Claude Code start. It is a stopgap, not the durability layer, the verbatim archive becomes ground
+  truth once capture is built and the window can be dialed back then.
 
 ## Note for a fresh session
 
