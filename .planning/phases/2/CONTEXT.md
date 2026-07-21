@@ -40,8 +40,10 @@ e.g. parse + record types, then grain + scrub, then NDJSON output + both-format 
   generation under the same `<project>/<session-id>/` archive directory (all share the parent sessionId).
   Evidence: nested subagent files carry the parent sessionId, archive layout on disk, src/config.rs.
 - D-06 (Field mapping): Event / Session / Artifact fields map mechanically from JSON - Event{uuid,
-  parentUuid, role, content-block kind (thinking/text/tool_use/tool_result), timestamp, tool name,
-  isSidechain, agentId, attributionAgent/Skill/Plugin, agent_type from the spawning Agent call};
+  parentUuid, role, content kind (thinking/text/tool_use/tool_result), timestamp, tool name,
+  isSidechain, agentId, attributionAgent/Skill/Plugin, agent_type from the spawning Agent call}. Note
+  `message.content` is EITHER a bare string (common on real user prompts) OR a block list; a string
+  becomes one text Event, a list one Event per block - both shapes must parse (surfaced in plan review);
   Session{sessionId, project from the archive segment, gitBranch, version->cc_version, first/last
   timestamp, `ai-title`->title}; Artifacts and Mentions come from tool-call INPUTS (Write/Edit/Bash) and
   answer text, never tool_result bodies. Evidence: live line-key analysis, docs/decisions/0003 and 0005,
