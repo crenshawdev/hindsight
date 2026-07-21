@@ -4,6 +4,7 @@
 //! is a direct archive directory path so the command is inspectable without a
 //! config file.
 
+mod extract;
 mod grain;
 mod model;
 mod parse;
@@ -52,10 +53,13 @@ fn run_to<W: Write>(session_dir: &Path, w: &mut W) -> Result<()> {
 
     let gen_lines: Vec<Vec<Value>> = generations.into_iter().map(|g| g.lines).collect();
     let events = parse::assemble_events(&gen_lines, &session_id);
+    let (mentions, artifacts) = extract::extract(&gen_lines, &session_id, &project);
 
-    let mut records = Vec::with_capacity(1 + events.len());
+    let mut records = Vec::with_capacity(1 + events.len() + artifacts.len() + mentions.len());
     records.push(Record::Session(session));
     records.extend(events.into_iter().map(Record::Event));
+    records.extend(artifacts.into_iter().map(Record::Artifact));
+    records.extend(mentions.into_iter().map(Record::Mention));
     model::write_ndjson(&records, w)
 }
 
