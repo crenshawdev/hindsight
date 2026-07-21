@@ -59,7 +59,11 @@ So the primary mechanism is not the hook, it is a sweep. A daemon walks the tran
 compares every file against a watermark of what it has already archived, and copies whatever is
 new or changed. Because the sweep is based on file age the same way the cleanup is, any sweep
 inside the thirty-day window catches everything, no matter how the session died. The hooks just
-make it prompt instead of periodic.
+make it prompt instead of periodic. The one thing the walk cannot be naive about is where a file
+sits, because most of them are not top-level sessions at all, 815 of the 1430 transcripts on my
+machine are subagent and workflow logs nested a level down under the session that spawned them, so
+the archive path is anchored to the tree root and carries the nested part through as a sub-path
+rather than filing every subagent under a phantom project. See [ADR 0001](decisions/0001-storage-location-and-archive-split.md).
 
 I did not want a timer polling on a clock whether or not anything happened, and I did not want a
 service sitting resident all day doing nothing. systemd socket activation gives you the third
