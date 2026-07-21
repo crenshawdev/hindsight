@@ -40,20 +40,43 @@ pub fn run() -> Result<()> {
         serde_json::from_slice(&raw).context("parsing the PreCompact JSON payload")?;
 
     let root = sweep_root()?;
-    let outcome = snapshot(&config, &root, &payload)?;
-
-    tracing::info!(
-        was_written = outcome.was_written(),
-        trigger = %payload.trigger,
-        "precompact snapshot"
-    );
+    match snapshot(&config, &root, &payload)? {
+        Some(outcome) => tracing::info!(
+            was_written = outcome.was_written(),
+            trigger = %payload.trigger,
+            "precompact snapshot"
+        ),
+        None => tracing::warn!(
+            transcript = %payload.transcript_path,
+            trigger = %payload.trigger,
+            "precompact: source transcript not on disk; nothing to snapshot, allowing compaction"
+        ),
+    }
     Ok(())
 }
 
 /// Archive the current bytes of the payload's transcript as a `precompact`
 /// generation. Split from `run` so tests exercise it without global stdin/env.
-fn snapshot(config: &Config, sweep_root: &Path, payload: &PreCompactPayload) -> Result<Outcome> {
+///
+/// `Ok(None)` means the source transcript was not on disk, so there was nothing
+/// to snapshot and the compaction is allowed (see the D-05 refinement below).
+fn snapshot(
+    config: &Config,
+    sweep_root: &Path,
+    payload: &PreCompactPayload,
+) -> Result<Option<Outcome>> {
     let transcript_path = Path::new(&payload.transcript_path);
+
+    // D-05 refinement: the fail-loud veto (exit 2) exists to protect the
+    // pre-compaction bytes we are about to lose. A source transcript that is not
+    // on disk - e.g. a fresh session compacted before Claude Code flushed its
+    // transcript - puts zero bytes at risk, so allow the compaction rather than
+    // vetoing it. A failure once the source IS present (bytes read but not
+    // persisted) still vetoes.
+    if !transcript_path.try_exists().unwrap_or(false) {
+        return Ok(None);
+    }
+
     let (project, session_id, sub_path) = match config.archive_key(sweep_root, transcript_path) {
         Ok(key) => key,
         Err(_) => {
@@ -68,7 +91,7 @@ fn snapshot(config: &Config, sweep_root: &Path, payload: &PreCompactPayload) -> 
         }
     };
 
-    archive::write_generation(
+    let outcome = archive::write_generation(
         config,
         &project,
         &session_id,
@@ -76,7 +99,8 @@ fn snapshot(config: &Config, sweep_root: &Path, payload: &PreCompactPayload) -> 
         transcript_path,
         Kind::Precompact,
     )
-    .context("writing the precompact generation")
+    .context("writing the precompact generation")?;
+    Ok(Some(outcome))
 }
 
 /// Best-effort project encoding for the fallback path: Claude Code names a
@@ -116,7 +140,9 @@ mod tests {
             cwd: "/proj".into(),
             trigger: "manual".into(),
         };
-        let outcome = snapshot(&cfg, &root, &payload).unwrap();
+        let outcome = snapshot(&cfg, &root, &payload)
+            .unwrap()
+            .expect("source present -> generation written");
         assert!(outcome.was_written());
 
         let gen_dir = base.join("archive/proj/sess");
@@ -145,10 +171,41 @@ mod tests {
             cwd: "/data/code/proj".into(),
             trigger: "auto".into(),
         };
-        let outcome = snapshot(&cfg, &root, &payload).unwrap();
+        let outcome = snapshot(&cfg, &root, &payload)
+            .unwrap()
+            .expect("source present -> generation written");
         assert!(outcome.was_written());
         assert!(base
             .join("archive/-data-code-proj/fallback-sess/0000.zst")
             .exists());
+    }
+
+    #[test]
+    fn snapshot_allows_compaction_when_source_transcript_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("base");
+        let root = tmp.path().join("claude");
+        let cfg = test_config(&base);
+
+        // The payload points at a transcript that was never written to disk - a
+        // fresh session compacted before Claude Code flushed it. D-05 refinement:
+        // no bytes are at risk, so snapshot returns None (allow compaction) and
+        // writes nothing, rather than erroring into an exit-2 veto.
+        let tpath = root.join("projects").join("proj").join("ghost.jsonl");
+        let payload = PreCompactPayload {
+            session_id: "ghost".into(),
+            transcript_path: tpath.to_string_lossy().into_owned(),
+            cwd: "/proj".into(),
+            trigger: "manual".into(),
+        };
+        let outcome = snapshot(&cfg, &root, &payload).unwrap();
+        assert!(
+            outcome.is_none(),
+            "absent source transcript -> nothing to snapshot, compaction allowed"
+        );
+        assert!(
+            !base.join("archive/proj/ghost").exists(),
+            "no generation written for an absent source"
+        );
     }
 }

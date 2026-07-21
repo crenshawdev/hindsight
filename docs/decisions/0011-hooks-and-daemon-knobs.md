@@ -21,6 +21,12 @@ me because I clear a session around twenty percent context and almost never comp
 brief block costs nothing and guarantees the pre-compaction bytes survive. This is the only hook beyond
 the session-start and session-end pokes.
 
+The snapshot fails loud and vetoes the compaction (exit 2) only when it holds bytes it could not
+persist, so the veto exists to protect a real capture. A source transcript that is not on disk when the
+hook fires, a fresh session compacted before Claude Code has flushed its transcript, puts no bytes at
+risk, so that case allows the compaction (exit 0) rather than blocking the user over nothing. Read the
+bytes and fail to archive them, that vetoes; find no bytes to read, that does not.
+
 **Poke-only, no filesystem watch.** Each poke triggers a full-tree sweep against the watermark, not
 just the session that poked. That is the safety property, a session that crashed before any end hook
 fired still left its bytes on disk, and the next session's start poke sweeps the tree and archives that
