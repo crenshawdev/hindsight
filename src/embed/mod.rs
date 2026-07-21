@@ -12,6 +12,7 @@
 //! CPU-fallback run resumes exactly - the ledger skip-check never skips a unit
 //! whose vector did not land, and never re-embeds one that did.
 
+pub mod gpu;
 pub mod ollama;
 pub mod profile;
 
@@ -23,7 +24,6 @@ use rusqlite::OptionalExtension;
 
 use crate::config::Config;
 use crate::store::open_db;
-use ollama::Placement;
 
 /// The profile-construction contract the stored vectors were built under. Bumped
 /// when the mechanical assembly in `profile.rs` changes shape, so a re-embed under
@@ -63,6 +63,12 @@ pub fn run(cfg: &Config, dump_profiles: bool) -> Result<()> {
         )
         .context("clearing stale-version vectors before drain")?;
 
+    // Choose GPU vs CPU once before the drain (D-05): a free card runs on the
+    // GPU, a busy card defers then falls back to CPU, an absent card runs on CPU
+    // immediately. A busy GPU never aborts the run.
+    let placement = gpu::choose_placement(&cfg.embed);
+    tracing::info!(?placement, "embed placement chosen");
+
     let embedded_at = now_rfc3339();
     let total = units.len();
     let mut skipped = 0usize;
@@ -86,7 +92,7 @@ pub fn run(cfg: &Config, dump_profiles: bool) -> Result<()> {
             continue;
         }
 
-        let vector = ollama::embed_document(&cfg.embed, &unit.text, Placement::Gpu)
+        let vector = ollama::embed_document(&cfg.embed, &unit.text, placement)
             .with_context(|| format!("embedding {} unit {}", unit.unit_kind, unit.source_id))?;
         let blob = vector_blob(&vector);
 
