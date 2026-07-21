@@ -1,9 +1,16 @@
 # Status
 
-**Phase: design complete, implementation not started.** This repo currently holds documentation only.
-There is no code yet. The architecture is settled end to end and recorded in the
-[decision records](decisions), narrated in [DESIGN.md](DESIGN.md), and drawn in
-[diagrams.md](diagrams.md).
+**Phase: capture and normalize built, store next.** Phases 1 and 2 are implemented and merged to main.
+The architecture is still settled end to end and recorded in the [decision records](decisions), narrated
+in [DESIGN.md](DESIGN.md), and drawn in [diagrams.md](diagrams.md); what changed is that the first two
+phases are code now, not just a plan.
+
+Phase 1 (Capture) shipped the socket-activated daemon, the poke path, the systemd units, the watermark
+and full-tree sweep, the verbatim zstd archive writer, and the synchronous PreCompact hook. Phase 2
+(Normalize) shipped the `hindsight normalize` subcommand: it reads the archived `.zst` generations and
+emits tagged NDJSON Session / Event / Artifact / Mention records with the three-tier grain and a
+fixed-pattern secret scrub over indexed text only. Both phases passed their UAT with every acceptance
+criterion verified against the real binary.
 
 ## Decided
 
@@ -27,25 +34,28 @@ from the same pass.
 
 ## Open, not yet decided
 
-These are the calls that were deliberately left for build time.
+- **The MCP tool surface.** Which named tools the server exposes and their argument shapes. Lands in
+  Phase 5.
 
-- **The concrete base directory name** under the data volume. The rule is "a configurable subdirectory,
-  never the volume root," but the actual path is unset.
-- **The secret-scrub ruleset.** The decision is to scrub the index; the specific patterns and
-  entropy thresholds are not written.
-- **The MCP tool surface.** Which named tools the server exposes and their argument shapes.
+Two items that used to sit here are settled now. The base directory is not defaulted at all: Phase 1's
+config makes `base_dir` required and rejects a filesystem root (ARC-02, src/config.rs), so there is no
+guessed path left to pin. The secret-scrub pattern set is written and shipped in Phase 2
+(src/normalize/scrub.rs, a fixed set of token, private-key, connection-string, auth-header, and
+config-value patterns over indexed text only); entropy-based detection stays deferred per
+[ADR 0008](decisions/0008-secrets-scrub-index-only.md), which is a later hardening pass, not an open
+question.
 
 ## Build order
 
-Roughly bottom-up, each step independently testable against the archive.
+Roughly bottom-up, each step independently testable against the archive. Done through step 3.
 
-1. Repo scaffold: the Cargo project and the one static binary that carries the daemon, CLI, and MCP
-   server as subcommands ([ADR 0012](decisions/0012-implementation-language-rust.md)).
-2. Capture: the daemon, the systemd socket and service units, the one-line session hooks, the
-   watermark, the verbatim archive writer (generational, compressed).
-3. Normalize: the JSON parser (both historical transcript formats), the four record types, the
-   three-tier grain, the secrets scrub.
-4. Store: the SQLite schema, FTS5 wiring, sqlite-vec setup.
+1. **(done)** Repo scaffold: the Cargo project and the one static binary that carries the daemon, CLI,
+   and MCP server as subcommands ([ADR 0012](decisions/0012-implementation-language-rust.md)).
+2. **(done, Phase 1)** Capture: the daemon, the systemd socket and service units, the one-line session
+   hooks, the watermark, the verbatim archive writer (generational, compressed).
+3. **(done, Phase 2)** Normalize: the JSON parser (both historical transcript formats), the four record
+   types, the three-tier grain, the secrets scrub.
+4. **(next, Phase 3)** Store: the SQLite schema, FTS5 wiring, sqlite-vec setup.
 5. Fuzzy: profile construction, Ollama embedding with the GPU-deferral scheduling, vectors into
    sqlite-vec.
 6. Query: the two-path core, RRF fusion, archive resolution, then the MCP server and the CLI over it.
