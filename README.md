@@ -34,6 +34,44 @@ Recall runs two ways, because "find me all occurrences" and "find the thing I ca
 
 Everything is local. The embedder is a model running on a desktop GPU I also game on, so it defers when the game wants the card and falls back to the CPU otherwise, nothing blocks on it. The index is one SQLite file. There is no server to stand up, no vector database to operate, nothing phones home during ingest. The one honest exception is the query path: when the model calls the memory mid-session, whatever comes back rides into that session's context, which does go over the wire. That is why secrets get scrubbed out of the index but left verbatim in the archive.
 
+## Install (Phase 1)
+
+Phase 1 is the capture layer: a socket-activated user daemon that archives every session transcript verbatim before Claude Code's cleanup sweep deletes it. This is what runs today.
+
+First build the binary and put it somewhere stable:
+
+```
+cargo build --release
+install -Dm755 "$(cargo metadata --format-version 1 | python -c 'import json,sys;print(json.load(sys.stdin)["target_directory"])')/release/hindsight" ~/.local/bin/hindsight
+```
+
+Create the config at `~/.config/hindsight/config.toml`. `base_dir` is required and must be a subdirectory under your backed-up data volume, never the volume root:
+
+```toml
+base_dir = "/data/hindsight"
+# Daemon self-terminates after this many idle seconds with no poke.
+# 900 (15 min) is the default; set it low (e.g. 5) while testing the lifecycle.
+idle_timeout_secs = 900
+```
+
+Install the user units. Copy `systemd/hindsight.socket` and `systemd/hindsight.service` into `~/.config/systemd/user/`, and edit `ExecStart=` in the service so it points at your installed binary (the default assumes `~/.local/bin/hindsight`):
+
+```
+mkdir -p ~/.config/systemd/user
+cp systemd/hindsight.socket systemd/hindsight.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hindsight.socket
+```
+
+The socket unit listens on `$XDG_RUNTIME_DIR/hindsight.sock`. A poke (a single byte to that socket) starts the daemon under socket activation; with no further pokes it self-terminates after `idle_timeout_secs`, and the next poke respawns it. Trigger a poke and watch the lifecycle:
+
+```
+hindsight poke
+journalctl --user -u hindsight.service --since "1 min ago"
+```
+
+You should see a `Spawned` line and, `idle_timeout_secs` after the last poke, a self-terminating line. To test the loop quickly, set `idle_timeout_secs = 5` in the config before poking.
+
 ## Why it exists
 
 I wanted my own memory, and I wanted to see the pipeline end to end instead of trusting a black box. Cognee was the reference, a good one, and reading it is what clarified what I actually needed versus what a general-purpose knowledge-graph engine gives you. Most of what I wanted turned out to be cheaper than that, because a Claude Code transcript is not a wall of prose, it is a structured event log that already knows which files I touched and which commands I ran. A lot of the graph is just sitting there in the JSON, exact and free, no language model required to pull it out.

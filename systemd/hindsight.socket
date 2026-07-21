@@ -1,0 +1,11 @@
+[Unit]
+Description=Hindsight capture daemon socket
+
+[Socket]
+# %t expands to $XDG_RUNTIME_DIR in a user unit, matching the poke and the
+# daemon's standalone-fallback bind path.
+ListenStream=%t/hindsight.sock
+Accept=no
+
+[Install]
+WantedBy=sockets.target
