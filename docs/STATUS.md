@@ -7,21 +7,18 @@ There is no code yet. The architecture is settled end to end and recorded in the
 
 ## Decided
 
-All eleven ADRs are accepted. In short: socket-activated capture daemon; verbatim archive plus a
+All twelve ADRs are accepted. In short: socket-activated capture daemon; verbatim archive plus a
 rebuildable SQLite index under a configurable data-volume subdirectory; mechanical normalize into
 Session / Event / Artifact / Mention with a three-tier grain; secrets scrubbed from the index only;
 qwen3-embedding:8b via Ollama on an opportunistic GPU schedule; SQLite with FTS5 and sqlite-vec as the
 one store; a two-path query interface (exact listing plus RRF-fused ranked search) over an MCP server
 and a CLI; backfill as an empty-watermark sweep; a synchronous PreCompact snapshot and a 15-minute idle
-daemon.
+daemon; and the whole system built in Rust as one static binary with daemon, CLI, and MCP subcommands.
 
 ## Open, not yet decided
 
 These are the calls that were deliberately left for build time.
 
-- **Implementation language and runtime.** Not chosen. The daemon, normalizer, query core, MCP server,
-  and CLI all need one. Constraints: has to run the SQLite/FTS5/sqlite-vec stack cleanly, talk to
-  Ollama, and ship a small always-available binary or script for socket activation.
 - **The concrete base directory name** under the data volume. The rule is "a configurable subdirectory,
   never the volume root," but the actual path is unset.
 - **The secret-scrub ruleset.** The decision is to scrub the index; the specific patterns and
@@ -32,7 +29,8 @@ These are the calls that were deliberately left for build time.
 
 Roughly bottom-up, each step independently testable against the archive.
 
-1. Repo scaffold and the language/runtime decision above.
+1. Repo scaffold: the Cargo project and the one static binary that carries the daemon, CLI, and MCP
+   server as subcommands ([ADR 0012](decisions/0012-implementation-language-rust.md)).
 2. Capture: the daemon, the systemd socket and service units, the one-line session hooks, the
    watermark, the verbatim archive writer (generational, compressed).
 3. Normalize: the JSON parser (both historical transcript formats), the four record types, the
