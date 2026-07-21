@@ -85,6 +85,18 @@ impl Config {
         self.base_dir.join("state")
     }
 
+    /// The rebuildable SQLite index lives under `base_dir/index` (D-09, ARC-02:
+    /// never the volume root). Phase 5 (query) and Phase 6 (backfill) open this
+    /// same path.
+    pub fn index_dir(&self) -> PathBuf {
+        self.base_dir.join("index")
+    }
+
+    /// The single SQLite database file: `base_dir/index/hindsight.db`.
+    pub fn db_path(&self) -> PathBuf {
+        self.index_dir().join("hindsight.db")
+    }
+
     /// Map a transcript path to its archive coordinates.
     ///
     /// The mapping is taken from the path *relative to `sweep_root/projects`*:
@@ -187,6 +199,16 @@ mod tests {
         let c = cfg("/data/hindsight");
         assert_eq!(c.archive_dir(), PathBuf::from("/data/hindsight/archive"));
         assert_eq!(c.state_dir(), PathBuf::from("/data/hindsight/state"));
+    }
+
+    #[test]
+    fn index_dir_is_base_slash_index() {
+        let c = cfg("/data/hindsight");
+        assert_eq!(c.index_dir(), PathBuf::from("/data/hindsight/index"));
+        assert_eq!(
+            c.db_path(),
+            PathBuf::from("/data/hindsight/index/hindsight.db")
+        );
     }
 
     #[test]

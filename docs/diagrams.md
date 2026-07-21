@@ -123,6 +123,7 @@ classDiagram
         archive_refs
     }
     class Event {
+        id
         uuid
         parent_uuid
         session_id

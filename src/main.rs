@@ -9,6 +9,7 @@ mod daemon;
 mod normalize;
 mod poke;
 mod precompact;
+mod store;
 mod sweep;
 mod watermark;
 
@@ -41,6 +42,8 @@ enum Command {
         /// Path to an archived session directory (parent plus nested subagents/).
         session_dir: PathBuf,
     },
+    /// Load a normalize NDJSON stream from stdin into the SQLite index.
+    Load,
 }
 
 fn main() -> ExitCode {
@@ -50,6 +53,7 @@ fn main() -> ExitCode {
         Command::Daemon => report(daemon::run()),
         Command::Poke => report(poke::run()),
         Command::Normalize { session_dir } => report(normalize::run(&session_dir)),
+        Command::Load => report(load_stream()),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -59,6 +63,12 @@ fn main() -> ExitCode {
             }
         },
     }
+}
+
+/// Load a normalize NDJSON stream from stdin into the SQLite index at the
+/// configured `db_path()`.
+fn load_stream() -> anyhow::Result<()> {
+    store::load::run(&config::Config::load()?)
 }
 
 fn report(result: anyhow::Result<()>) -> ExitCode {

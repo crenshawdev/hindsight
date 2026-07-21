@@ -17,6 +17,9 @@
 - [ ] (phase 2) `read_generations` aborts the whole session on one invalid JSON line; a mid-append truncated final line makes an otherwise-complete session emit zero records - consider skip-and-continue per line
 - [ ] (phase 2) `extract.rs` heredoc close matches `trim() == delim`, so an indented delimiter-lookalike inside a plain (non `<<-`) heredoc truncates the artifact early
 - [ ] (phase 2) `extract.rs` fenced-block detection breaks on an inner ``` line or unclosed opening fence, truncating or dropping subsequent fenced artifacts in the same message
+- [ ] (phase 3) Artifact FTS5 inner-join drops an artifact whose `source_event_uuid` matches no `event` row (D-04 says "every Artifact.content"); a LEFT JOIN would preserve it with a null session_id
+- [ ] (phase 3) Malformed line missing its `uuid` (empty `source_event_uuid`, empty-uuid events exempt from dedup) could fan an artifact out across every empty-uuid event, producing misattributed FTS rows; reachable only on malformed input plus a multi-session load
+- [ ] (phase 3) Doc-sync (standing rule 1): no dedicated store-schema ADR yet - the Phase-3 schema lives only in CONTEXT decisions D-05..D-11; consider promoting it to an ADR before Phase 5/6 build on it
 
 ## Seeds
 
