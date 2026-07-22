@@ -180,6 +180,45 @@ pub fn write_generation(
     }
 }
 
+/// Read and decompress an archived generation to its verbatim bytes (D-07). The
+/// first public read path on this writer-only module: a query hit resolves via
+/// `session.archive_refs` (JSON array of labels like `0000.zst` or
+/// `subagents/agent-x/0000.zst`) plus `project` + `session_id` to
+/// `archive_dir()/<project>/<session-id>/<gen_ref>`, decompressed.
+///
+/// Every path segment (project, session_id, and each `/`-split segment of
+/// `gen_ref`) is validated with the same `check_segment` guard the writer uses,
+/// and the resolved path is confirmed to stay under `archive_dir()` (the ARC-02
+/// guard `resolve_session_dir` applies), so a crafted `archive_refs` label cannot
+/// escape the archive tree.
+pub fn read_generation(
+    config: &Config,
+    project: &str,
+    session_id: &str,
+    gen_ref: &str,
+) -> Result<Vec<u8>> {
+    let archive_dir = config.archive_dir();
+    let mut path = archive_dir
+        .join(check_segment(project)?)
+        .join(check_segment(session_id)?);
+    for seg in gen_ref.split('/') {
+        path = path.join(check_segment(seg)?);
+    }
+    if !path.starts_with(&archive_dir) {
+        bail!(
+            "resolved archive path {} escapes archive_dir {} (ARC-02)",
+            path.display(),
+            archive_dir.display()
+        );
+    }
+
+    let file = std::fs::File::open(&path)
+        .with_context(|| format!("opening generation {}", path.display()))?;
+    let bytes = zstd::decode_all(file)
+        .with_context(|| format!("decompressing generation {}", path.display()))?;
+    Ok(bytes)
+}
+
 /// Create a uniquely-named temp file in `dir`, exclusively, and write
 /// `compressed` into it. Returns the temp path (the caller hard-links it into
 /// place then removes it).
@@ -632,6 +671,34 @@ mod tests {
         let round = zstd::decode_all(std::fs::File::open(&committed).unwrap()).unwrap();
         assert_eq!(round, content, "committed generation must be uncorrupted");
         assert_eq!(generation_sha(&committed).unwrap(), sha256_hex(content));
+    }
+
+    #[test]
+    fn read_generation_round_trips_written_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        let src = tmp.path().join("s.jsonl");
+        let content = b"{\"type\":\"user\",\"uuid\":\"u1\"}\n{\"type\":\"assistant\",\"uuid\":\"u2\"}\n";
+        std::fs::write(&src, content).unwrap();
+
+        // Top-level generation: read it back by its `0000.zst` ref label.
+        write_generation(&cfg, "proj", "sess", "", &src, Kind::Sweep).unwrap();
+        let bytes = read_generation(&cfg, "proj", "sess", "0000.zst").unwrap();
+        assert_eq!(bytes, content, "read_generation returns the verbatim source bytes");
+
+        // Nested subagent generation: the label carries its sub-path.
+        write_generation(&cfg, "proj", "sess", "subagents/agent-x", &src, Kind::Sweep).unwrap();
+        let nested = read_generation(&cfg, "proj", "sess", "subagents/agent-x/0000.zst").unwrap();
+        assert_eq!(nested, content, "a nested subagent ref label resolves and decompresses");
+    }
+
+    #[test]
+    fn read_generation_rejects_escape_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        // A `..` segment in the ref label is rejected by check_segment.
+        assert!(read_generation(&cfg, "p", "s", "../escape").is_err());
+        assert!(read_generation(&cfg, "p", "s", "subagents/../../etc/passwd").is_err());
     }
 
     #[test]
