@@ -67,6 +67,12 @@ as everything else ([ADR 0006](0006-storage-engine-sqlite.md)).
 
 ## Amendment (2026-07-21, Phase 4 build)
 
+**Partly superseded by [ADR 0013](0013-embed-delivery-hook-gpu.md) (Phase 5).** The delivery specifics
+in this amendment, the systemd timer trigger, the `nvidia-smi` GPU-busy defer, and the CPU fallback,
+are all reversed there: embedding is now hook-triggered, detached, and always-GPU with no CPU path. The
+transport (`ureq` to `/api/embed`, the dimension pin) and the resumable `embed_ledger` described below
+still stand.
+
 The deferrable-embedder decision is built now, and the parts left open above resolved to these
 specifics.
 

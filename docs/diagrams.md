@@ -23,14 +23,13 @@ flowchart TD
 
     subgraph sd[systemd]
         sock{{socket unit}}
-        timer{{embed timer unit}}
     end
 
     daemon[Capture daemon]
-    embed[Embed job\ntimer-driven batch\ndrain-and-exit]
+    embed[Embed job\nhook-triggered detached drain\ndrain-and-exit]
     archive[(Verbatim archive\ncompressed, generational\nDURABLE, never mutated)]
     index[(SQLite index\nSession / Event / Artifact / Mention\nFTS5 BM25 + sqlite-vec\nREBUILDABLE)]
-    ollama[Ollama\nqwen3-embedding:8b\nGPU opportunistic / CPU floor]
+    ollama[Ollama\nqwen3-embedding:8b\nGPU-resident while embedding]
 
     mcp[MCP server\nrecall inside a session]
     cli[CLI\noperate + ground-truth search]
@@ -41,7 +40,6 @@ flowchart TD
     daemon -- verbatim copy --> archive
     daemon -- normalize + scrub --> index
 
-    timer -- triggers --> embed
     embed -- read records --> index
     embed -- embed request --> ollama
     ollama -- vectors --> index
@@ -76,7 +74,7 @@ sequenceDiagram
     D->>A: verbatim copy (never mutated)
     D->>X: normalize, scrub secrets, upsert records + FTS
     Note over D,X: exact + lexical recall live here already
-    Note over D,X: embedding is NOT here. A separate timer-driven\nembed job reads records and writes vectors, so a\nlong deferring embed never fights the daemon's idle exit.
+    Note over D,X: embedding is NOT here. A session hook fires a\nhook-triggered detached embed process that reads records and writes\nvectors, so a long drain never fights the daemon's idle exit.
     D->>D: mark watermark, idle 15 min, then exit
 ```
 
