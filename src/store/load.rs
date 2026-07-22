@@ -49,7 +49,7 @@ pub fn run(cfg: &Config) -> Result<()> {
 /// Buffer-injectable core: load the NDJSON stream from `reader`. Split out so a
 /// test can feed an in-memory buffer; the acceptance verification drives the
 /// built binary instead.
-fn run_from<R: Read>(cfg: &Config, reader: R) -> Result<()> {
+pub(crate) fn run_from<R: Read>(cfg: &Config, reader: R) -> Result<()> {
     let mut conn = open_db(&cfg.db_path())?;
     let tx = conn.transaction().context("beginning load transaction")?;
 

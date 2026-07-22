@@ -26,6 +26,15 @@ pub const EMBED_DIMS: usize = 4096;
 /// A value well above the model's real layer count means "all layers on GPU".
 const FORCE_GPU_LAYERS: u32 = 999;
 
+/// The qwen3-embedding query-side task description (D-04). qwen3-embedding is an
+/// instruction-tuned model whose query side is wrapped in an
+/// `Instruct: {task}\nQuery: {query}` template while the document side embeds raw
+/// (ADR 0005's "describe it, get the name" asymmetry lives on the query side). The
+/// task frames the retrieval target as this tool's corpus of past-session records.
+const QUERY_TASK: &str =
+    "Given a search query, retrieve relevant records from past Claude Code coding \
+     sessions (files, commands, code, and discussion) that answer it";
+
 #[derive(Serialize)]
 struct EmbedRequest<'a> {
     model: &'a str,
@@ -88,4 +97,75 @@ pub fn embed_document(cfg: &EmbedConfig, text: &str) -> Result<Vec<f32>> {
         );
     }
     Ok(vector)
+}
+
+/// Embed a query and return its 4096-dim vector (D-04). Distinct from
+/// `embed_document`: the query text is wrapped in the qwen3 query-side instruction
+/// template via `query_input` before the POST; everything else - model,
+/// `num_gpu` full-GPU pin, `dimensions` pin, and the post-response `EMBED_DIMS`
+/// length enforcement - is identical to the document path. Documents never take
+/// this prefix; only the query side is asymmetric.
+pub fn embed_query(cfg: &EmbedConfig, query: &str) -> Result<Vec<f32>> {
+    let input = query_input(query);
+    let req = EmbedRequest {
+        model: &cfg.model,
+        input: &input,
+        keep_alive: &cfg.keep_alive,
+        dimensions: EMBED_DIMS,
+        options: EmbedOptions {
+            num_gpu: FORCE_GPU_LAYERS,
+        },
+    };
+
+    let url = format!("{}/api/embed", cfg.ollama_url.trim_end_matches('/'));
+    let resp: EmbedResponse = ureq::post(&url)
+        .send_json(&req)
+        .with_context(|| format!("POST {url}"))?
+        .into_json()
+        .context("parsing Ollama /api/embed response")?;
+
+    let vector = resp
+        .embeddings
+        .into_iter()
+        .next()
+        .context("Ollama /api/embed returned no embeddings")?;
+
+    if vector.len() != EMBED_DIMS {
+        bail!(
+            "Ollama returned a {}-dim vector, expected {EMBED_DIMS} (model {})",
+            vector.len(),
+            cfg.model
+        );
+    }
+    Ok(vector)
+}
+
+/// Wrap a raw query in the qwen3 query-side instruction template (D-04). Pure and
+/// prefix-only: the document path (`embed_document`) never calls this, so a
+/// document is embedded raw while a query carries the `Instruct:`/`Query:` frame.
+fn query_input(query: &str) -> String {
+    format!("Instruct: {QUERY_TASK}\nQuery: {query}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D-04: the query-side input carries the instruction prefix and the raw query
+    /// text, and it is NOT the bare query (which is what `embed_document` sends).
+    #[test]
+    fn query_input_wraps_with_instruction_prefix() {
+        let q = "find the deploy script";
+        let wrapped = query_input(q);
+
+        assert!(wrapped.contains("Instruct: "), "carries the instruct prefix");
+        assert!(wrapped.contains("Query: "), "carries the query marker");
+        assert!(wrapped.contains(q), "carries the raw query text verbatim");
+        assert!(wrapped.ends_with(q), "the raw query is the tail after the frame");
+        assert_ne!(wrapped, q, "the query side is not the bare document-side input");
+        assert!(
+            wrapped.starts_with("Instruct: "),
+            "the frame precedes the query, so a document (raw) and a query differ"
+        );
+    }
 }
