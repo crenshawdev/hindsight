@@ -117,6 +117,20 @@ pub fn apply(conn: &Connection) -> Result<()> {
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+
+        -- Ingest ledger (Phase 7): incremental-ingest's own durable state, parallel
+        -- to embed_ledger. One row per archived session recording the fingerprint of
+        -- its generations at last index, so `hindsight ingest` re-indexes only the
+        -- sessions whose archive changed. Derived/rebuildable (the archive is ground
+        -- truth), but deliberately NOT in load's FRESH_BUILD_TABLES: a full reload
+        -- rebuilds the same rows the fingerprints already describe, so the ledger
+        -- stays valid and the next ingest correctly skips unchanged sessions.
+        CREATE TABLE IF NOT EXISTS ingest_ledger (
+            session_id  TEXT PRIMARY KEY,
+            project     TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            ingested_at INTEGER NOT NULL
+        );
         ",
     )
     .context("creating relational tables")?;
