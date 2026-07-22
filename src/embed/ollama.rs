@@ -3,6 +3,11 @@
 //! 4096-dim expectation and a short `keep_alive`. Not the `ollama` CLI, not the
 //! `ollama-rs` crate, no async runtime - a drain-and-exit batch command wants a
 //! synchronous call.
+//!
+//! Every embed runs on the GPU (D-05, ADR 0013): every request pins
+//! `options.num_gpu` high enough to force full GPU offload, so an embed either runs
+//! fully GPU-resident or Ollama errors (caught by the drain's continue-on-error).
+//! There is no CPU path and no placement decision to make.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,13 +19,12 @@ use crate::config::EmbedConfig;
 /// check below is the hard enforcement backing ADR 0004's dimension footgun.
 pub const EMBED_DIMS: usize = 4096;
 
-/// Where Ollama runs the embed: on the GPU (its default) or forced onto the CPU
-/// via `options.num_gpu = 0` (the D-05 fallback path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Placement {
-    Gpu,
-    Cpu,
-}
+/// `num_gpu` layer count sent on every request: high enough to force Ollama to
+/// offload all of the model's layers to the GPU (D-05, ADR 0013). Deleting the
+/// option entirely would hand placement to Ollama's auto heuristic, which
+/// partial-offloads to CPU under VRAM pressure - the exact CPU path forbidden here.
+/// A value well above the model's real layer count means "all layers on GPU".
+const FORCE_GPU_LAYERS: u32 = 999;
 
 #[derive(Serialize)]
 struct EmbedRequest<'a> {
@@ -30,10 +34,9 @@ struct EmbedRequest<'a> {
     /// Request-side dimension pin (D-01). `qwen3-embedding:8b` returns native
     /// 4096, so this states intent; Ollama accepts and ignores it for this model.
     dimensions: usize,
-    /// Present only for `Placement::Cpu` (`num_gpu = 0`); omitted for GPU so
-    /// Ollama uses its default placement.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<EmbedOptions>,
+    /// Always sent (D-05, ADR 0013): pins full GPU offload so no request silently
+    /// partial-offloads to CPU under VRAM pressure.
+    options: EmbedOptions,
 }
 
 #[derive(Serialize)]
@@ -51,17 +54,15 @@ struct EmbedResponse {
 /// The text is sent verbatim as `input` with NO instruction prefix: the qwen3
 /// query-side instruction template is a Phase 5 query concern, documents embed
 /// raw (ADR 0005's "describe it, get the name" asymmetry lives on the query side).
-pub fn embed_document(cfg: &EmbedConfig, text: &str, place: Placement) -> Result<Vec<f32>> {
-    let options = match place {
-        Placement::Cpu => Some(EmbedOptions { num_gpu: 0 }),
-        Placement::Gpu => None,
-    };
+pub fn embed_document(cfg: &EmbedConfig, text: &str) -> Result<Vec<f32>> {
     let req = EmbedRequest {
         model: &cfg.model,
         input: text,
         keep_alive: &cfg.keep_alive,
         dimensions: EMBED_DIMS,
-        options,
+        options: EmbedOptions {
+            num_gpu: FORCE_GPU_LAYERS,
+        },
     };
 
     let url = format!("{}/api/embed", cfg.ollama_url.trim_end_matches('/'));

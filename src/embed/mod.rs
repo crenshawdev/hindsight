@@ -1,18 +1,18 @@
-//! `hindsight embed` (D-02): assemble synthetic profile units from the loaded
-//! store and embed them via Ollama into the two-stage `vec_embedding` table. A
-//! drain-and-exit batch command matching the `normalize`/`load` pattern, driven by
-//! a systemd timer (D-03), never folded into the capture daemon.
+//! `hindsight embed` (D-02, ADR 0013): assemble synthetic profile units from the
+//! loaded store and embed them via Ollama into the two-stage `vec_embedding` table.
+//! A drain-and-exit batch command matching the `normalize`/`load` pattern, triggered
+//! by the session-lifecycle hooks as a detached (`setsid`) process that runs
+//! unconditionally on the GPU with no CPU path, never folded into the capture daemon.
 //!
 //! `--dump-profiles` is the Ollama-free inspection sink (D-11): it prints the
 //! assembled units as NDJSON and writes no vectors, so profile assembly is
 //! machine-checkable without an embedder.
 //!
 //! The drain is resumable (D-06): each embedded unit is stamped in `embed_ledger`
-//! in the SAME transaction as its vector insert, so a deferred, interrupted, or
-//! CPU-fallback run resumes exactly - the ledger skip-check never skips a unit
-//! whose vector did not land, and never re-embeds one that did.
+//! in the SAME transaction as its vector insert, so an interrupted run resumes
+//! exactly - the ledger skip-check never skips a unit whose vector did not land,
+//! and never re-embeds one that did.
 
-pub mod gpu;
 pub mod ollama;
 pub mod profile;
 
@@ -63,12 +63,6 @@ pub fn run(cfg: &Config, dump_profiles: bool) -> Result<()> {
         )
         .context("clearing stale-version vectors before drain")?;
 
-    // Choose GPU vs CPU once before the drain (D-05): a free card runs on the
-    // GPU, a busy card defers then falls back to CPU, an absent card runs on CPU
-    // immediately. A busy GPU never aborts the run.
-    let placement = gpu::choose_placement(&cfg.embed);
-    tracing::info!(?placement, "embed placement chosen");
-
     let embedded_at = now_rfc3339();
     let total = units.len();
     let mut skipped = 0usize;
@@ -92,7 +86,7 @@ pub fn run(cfg: &Config, dump_profiles: bool) -> Result<()> {
             continue;
         }
 
-        let vector = ollama::embed_document(&cfg.embed, &unit.text, placement)
+        let vector = ollama::embed_document(&cfg.embed, &unit.text)
             .with_context(|| format!("embedding {} unit {}", unit.unit_kind, unit.source_id))?;
         let blob = vector_blob(&vector);
 

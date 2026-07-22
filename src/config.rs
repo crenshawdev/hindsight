@@ -22,22 +22,11 @@ fn default_embed_model() -> String {
 fn default_keep_alive() -> String {
     "5m".to_string()
 }
-fn default_gpu_util_busy_pct() -> u32 {
-    30
-}
-fn default_gpu_min_free_mib() -> u64 {
-    6144
-}
-fn default_gpu_defer_poll_secs() -> u64 {
-    60
-}
-fn default_gpu_max_defer_secs() -> u64 {
-    1800
-}
 
-/// The `[embed]` knobs (D-01, D-04, D-05). Every field carries a serde default so
+/// The `[embed]` knobs (D-01, ADR 0013). Every field carries a serde default so
 /// an absent `[embed]` table (or an absent field) yields the shipped defaults and
-/// no config edit is required to run `hindsight embed`.
+/// no config edit is required to run `hindsight embed`. Embedding runs
+/// unconditionally on the GPU (ADR 0013), so there are no GPU-scheduling knobs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbedConfig {
     /// Ollama base URL; `/api/embed` is appended (D-01).
@@ -49,18 +38,6 @@ pub struct EmbedConfig {
     /// Ollama `keep_alive`: stays warm across a drain, unloads after (ADR 0004).
     #[serde(default = "default_keep_alive")]
     pub keep_alive: String,
-    /// GPU is "busy" at or above this `nvidia-smi` utilization percent (D-04).
-    #[serde(default = "default_gpu_util_busy_pct")]
-    pub gpu_util_busy_pct: u32,
-    /// GPU is "busy" when free VRAM (MiB) is below this (D-04).
-    #[serde(default = "default_gpu_min_free_mib")]
-    pub gpu_min_free_mib: u64,
-    /// Poll interval while deferring on a busy GPU (D-05).
-    #[serde(default = "default_gpu_defer_poll_secs")]
-    pub gpu_defer_poll_secs: u64,
-    /// Total defer budget before falling back to CPU (D-05).
-    #[serde(default = "default_gpu_max_defer_secs")]
-    pub gpu_max_defer_secs: u64,
 }
 
 impl Default for EmbedConfig {
@@ -69,10 +46,6 @@ impl Default for EmbedConfig {
             ollama_url: default_ollama_url(),
             model: default_embed_model(),
             keep_alive: default_keep_alive(),
-            gpu_util_busy_pct: default_gpu_util_busy_pct(),
-            gpu_min_free_mib: default_gpu_min_free_mib(),
-            gpu_defer_poll_secs: default_gpu_defer_poll_secs(),
-            gpu_max_defer_secs: default_gpu_max_defer_secs(),
         }
     }
 }
@@ -88,7 +61,7 @@ pub struct Config {
     #[serde(default = "default_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
 
-    /// Embedding knobs (D-01, D-04, D-05). An absent `[embed]` table yields all
+    /// Embedding knobs (D-01, ADR 0013). An absent `[embed]` table yields all
     /// defaults so no config edit is required to run `hindsight embed`.
     #[serde(default)]
     pub embed: EmbedConfig,
@@ -270,19 +243,15 @@ mod tests {
         assert_eq!(c.embed.ollama_url, "http://127.0.0.1:11434");
         assert_eq!(c.embed.model, "qwen3-embedding:8b");
         assert_eq!(c.embed.keep_alive, "5m");
-        assert_eq!(c.embed.gpu_util_busy_pct, 30);
-        assert_eq!(c.embed.gpu_min_free_mib, 6144);
-        assert_eq!(c.embed.gpu_defer_poll_secs, 60);
-        assert_eq!(c.embed.gpu_max_defer_secs, 1800);
     }
 
     #[test]
     fn embed_partial_table_keeps_other_defaults() {
         let c = Config::from_toml_str(
-            "base_dir = \"/data/hindsight\"\n[embed]\ngpu_util_busy_pct = 50\n",
+            "base_dir = \"/data/hindsight\"\n[embed]\nkeep_alive = \"10m\"\n",
         )
         .unwrap();
-        assert_eq!(c.embed.gpu_util_busy_pct, 50);
+        assert_eq!(c.embed.keep_alive, "10m");
         assert_eq!(c.embed.model, "qwen3-embedding:8b");
     }
 
