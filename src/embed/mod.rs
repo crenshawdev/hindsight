@@ -19,10 +19,12 @@ pub mod profile;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::OptionalExtension;
 
 use crate::config::Config;
@@ -82,9 +84,56 @@ fn acquire_lock(state_dir: &Path) -> Result<LockOutcome> {
     }
 }
 
+/// Spawn a detached child that re-execs this binary as `hindsight embed` and
+/// return immediately (D-01, D-02). The child calls `setsid` so it leads a new
+/// session and process group and survives the hook's process-group reaping, and its
+/// three standard streams are redirected to `/dev/null` BEFORE the spawn: a session
+/// hook's stdout is a pipe Claude Code reads to EOF for the hook JSON, so a child
+/// that inherited that write-end would hold it open for the whole multi-minute
+/// drain and block the session. With stdio nulled and the child handle dropped, no
+/// descriptor keeps the hook's pipe open and the parent returns at once.
+fn spawn_detached(program: &Path, args: &[&str]) -> Result<()> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: `setsid` is async-signal-safe and the closure touches no shared
+    // state; it only detaches the child into a new session before exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("spawning detached {}", program.display()))?;
+    // Drop the handle without waiting: the child is reparented and runs on its own.
+    drop(child);
+    Ok(())
+}
+
 /// Open the store, assemble profile units, and either dump them (D-11) or drain
-/// the queue into `vec_embedding`, skipping already-embedded units (D-06).
-pub fn run(cfg: &Config, dump_profiles: bool) -> Result<()> {
+/// the queue into `vec_embedding`, skipping already-embedded units (D-06). With
+/// `detach` set, self-detach a child to run the drain and return immediately (D-01).
+pub fn run(cfg: &Config, dump_profiles: bool, detach: bool) -> Result<()> {
+    // `--dump-profiles` is a foreground inspection sink; detaching it would send its
+    // NDJSON to /dev/null in a child, which is never what the caller wants.
+    if detach && dump_profiles {
+        bail!("--detach cannot be combined with --dump-profiles (dump is a foreground sink)");
+    }
+
+    // Detach path (D-01, D-02): spawn the drain as a new-session child and return
+    // before opening the DB or taking the lock, so a session hook is not blocked.
+    // The child is a plain `hindsight embed`, which takes the single-flight lock.
+    if detach {
+        let exe = std::env::current_exe().context("resolving current executable for --detach")?;
+        spawn_detached(&exe, &["embed"])?;
+        tracing::info!("spawned detached embed drain; parent returning");
+        return Ok(());
+    }
+
     let mut conn = open_db(&cfg.db_path())?;
 
     // `--dump-profiles` is a foreground inspection sink (D-11): it writes no
@@ -403,6 +452,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use crate::config::{Config, EmbedConfig};
+    use std::time::{Duration, Instant};
 
     /// A `Config` rooted at a temp dir so `db_path()` and `state_dir()` land under it.
     fn test_config(base: &Path) -> Config {
@@ -466,7 +516,7 @@ mod tests {
             LockOutcome::AlreadyHeld => panic!("expected to acquire the lock first"),
         };
 
-        run(&cfg, false).expect("run returns Ok(()) when the drain lock is held");
+        run(&cfg, false, false).expect("run returns Ok(()) when the drain lock is held");
 
         let conn = open_db(&cfg.db_path()).unwrap();
         let n: i64 = conn
@@ -570,6 +620,55 @@ mod tests {
         assert!(
             !called.contains(&"1".to_string()) && !called.contains(&"3".to_string()),
             "embed_fn is not called for already-done units"
+        );
+    }
+
+    /// D-01, Ollama-free: `spawn_detached` returns promptly and the detached child
+    /// runs on to completion AFTER the spawn returned, proving the child outlives
+    /// the returning parent. A trivial `sh` child (sleep, then touch a sentinel)
+    /// stands in for the real `hindsight embed` drain so no Ollama/GPU is needed.
+    #[test]
+    fn detached_child_outlives_the_spawn_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("done");
+        let script = format!("sleep 0.4; : > '{}'", sentinel.display());
+
+        let start = Instant::now();
+        spawn_detached(Path::new("sh"), &["-c", &script]).expect("spawn returns Ok");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "spawn returned promptly ({elapsed:?}), did not wait for the child"
+        );
+        assert!(
+            !sentinel.exists(),
+            "child has not finished its sleep when the spawn returned"
+        );
+
+        let mut appeared = false;
+        for _ in 0..100 {
+            if sentinel.exists() {
+                appeared = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            appeared,
+            "the detached child completed its work after the spawn call returned"
+        );
+    }
+
+    /// D-01: `--detach` with `--dump-profiles` is rejected before any spawn or DB
+    /// open (dump is a foreground sink).
+    #[test]
+    fn detach_with_dump_profiles_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        assert!(
+            run(&cfg, true, true).is_err(),
+            "--detach + --dump-profiles must error"
         );
     }
 }

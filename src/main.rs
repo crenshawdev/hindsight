@@ -50,6 +50,10 @@ enum Command {
         /// Print the assembled profile units as NDJSON and write no vectors.
         #[arg(long)]
         dump_profiles: bool,
+        /// Self-detach (setsid) and return immediately; a detached child runs the
+        /// drain. This is the hook-fired entrypoint (D-01), distinct from `poke`.
+        #[arg(long)]
+        detach: bool,
     },
 }
 
@@ -61,7 +65,10 @@ fn main() -> ExitCode {
         Command::Poke => report(poke::run()),
         Command::Normalize { session_dir } => report(normalize::run(&session_dir)),
         Command::Load => report(load_stream()),
-        Command::Embed { dump_profiles } => report(embed_run(dump_profiles)),
+        Command::Embed {
+            dump_profiles,
+            detach,
+        } => report(embed_run(dump_profiles, detach)),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -80,9 +87,10 @@ fn load_stream() -> anyhow::Result<()> {
 }
 
 /// Assemble synthetic profiles from the loaded index and embed them into the
-/// vector store (or dump them when `dump_profiles` is set).
-fn embed_run(dump_profiles: bool) -> anyhow::Result<()> {
-    embed::run(&config::Config::load()?, dump_profiles)
+/// vector store (or dump them when `dump_profiles` is set). With `detach`, spawn a
+/// detached child to run the drain and return immediately (D-01).
+fn embed_run(dump_profiles: bool, detach: bool) -> anyhow::Result<()> {
+    embed::run(&config::Config::load()?, dump_profiles, detach)
 }
 
 fn report(result: anyhow::Result<()>) -> ExitCode {
