@@ -17,9 +17,10 @@ it.
 - [x] **Phase 1: Capture** - socket-activated daemon that archives every session verbatim before cleanup
 - [x] **Phase 2: Normalize** - parse archived transcripts into the four record types with grain and scrubbing
 - [x] **Phase 3: Store** - persist records into one SQLite file with FTS5 and sqlite-vec
-- [ ] **Phase 4: Fuzzy** - synthetic profiles embedded via Ollama into sqlite-vec
-- [ ] **Phase 5: Query and surfaces** - two-path recall over an MCP server and a CLI
-- [ ] **Phase 6: Backfill and cutover** - ingest existing history and go live
+- [x] **Phase 4: Fuzzy** - synthetic profiles embedded via Ollama into sqlite-vec
+- [ ] **Phase 5: Embed delivery** - hook-triggered, always-GPU embedding, single-flighted and resumable
+- [ ] **Phase 6: Query and surfaces** - two-path recall over an MCP server and a CLI
+- [ ] **Phase 7: Backfill and cutover** - ingest existing history and go live
 
 ## Phase Details
 
@@ -73,12 +74,30 @@ GPU-opportunistic schedule.
 **Success Criteria:**
 1. Profiles are constructed mechanically from records and contain no raw secrets or full-code payloads.
 2. Embedding runs against Ollama qwen3-embedding and stores its vectors in sqlite-vec.
-3. When the GPU is busy the embed job defers or falls back to CPU rather than failing.
+3. Embedding lands its vectors on the GPU, and an interrupted run resumes against the ledger without
+   re-embedding units that already landed.
 
-### Phase 5: Query and surfaces
+### Phase 5: Embed delivery
+**Goal:** Replace the timer trigger and GPU-opportunistic scheduling with embedding triggered by the
+session-lifecycle hooks, running unconditionally on the GPU, single-flighted and resumable, with a
+one-time backfill then incremental cutover.
+**Depends on:** Phase 4
+**Requirements:** EMB-01, EMB-02
+**Success Criteria:**
+1. A session hook triggers a detached embed drain that returns without blocking the session, and no
+   timer remains.
+2. Embedding runs unconditionally on the GPU with no CPU-fallback path present in the code.
+3. Concurrent triggers never double-embed a unit, and a session landing mid-drain is embedded without
+   lag.
+4. An interrupted drain resumes from the ledger and re-embeds only units that did not land, and one
+   Ollama error does not abort the run.
+5. `hindsight embed --status` reports drain progress and health, distinguishing done, running,
+   stalled, and failed.
+
+### Phase 6: Query and surfaces
 **Goal:** The two-path query core (exact listing and RRF-fused ranked search) exposed through an MCP
 server for recall and a CLI for operating and ground-truth search.
-**Depends on:** Phase 4
+**Depends on:** Phase 5
 **Requirements:** QRY-01, QRY-02, QRY-03, IFC-01, IFC-02
 **Success Criteria:**
 1. An exact listing query (for example every session that touched a given file) returns all matches
@@ -89,10 +108,10 @@ server for recall and a CLI for operating and ground-truth search.
 4. Claude Code calls the MCP server's recall tools and gets results, and the CLI runs the same search
    and the operational commands.
 
-### Phase 6: Backfill and cutover
+### Phase 7: Backfill and cutover
 **Goal:** Ingest all existing transcript history through the normal pipeline, then wire the hooks and
 retire the prior memory tool.
-**Depends on:** Phase 5
+**Depends on:** Phase 6
 **Requirements:** MIG-01, MIG-02
 **Success Criteria:**
 1. A first run with an empty watermark backfills existing history newest-first, and interrupting then

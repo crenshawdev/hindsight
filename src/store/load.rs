@@ -20,14 +20,22 @@ use crate::normalize::model::{Grain, Record};
 use crate::store::open_db;
 
 /// Tables cleared at the start of every load so the DB rebuilds from empty
-/// (D-10). `vec_embedding` is included even though this phase never inserts a
-/// vector, so a Phase-4 reload cannot leave orphaned vectors behind stale
-/// relational rows. `fts` is cleared in step with the relational tables so a
-/// reload rebuilds the FTS index with no stale rows from a prior load. `meta` is
-/// deliberately NOT here - its provenance stamp survives a reload and is
-/// re-seeded idempotently by the schema.
-const FRESH_BUILD_TABLES: [&str; 6] =
-    ["session", "event", "artifact", "mention", "vec_embedding", "fts"];
+/// (D-10). `vec_embedding` and its `embed_ledger` are wiped in lockstep so a
+/// reload cannot leave orphaned vectors or a stale embed stamp behind fresh
+/// relational rows, and so ledger-empty safely means not-embedded: the next
+/// `hindsight embed` re-embeds the whole corpus (D-06, D-10). `fts` is cleared in
+/// step with the relational tables so a reload rebuilds the FTS index with no
+/// stale rows from a prior load. `meta` is deliberately NOT here - its provenance
+/// stamp survives a reload and is re-seeded idempotently by the schema.
+const FRESH_BUILD_TABLES: [&str; 7] = [
+    "session",
+    "event",
+    "artifact",
+    "mention",
+    "vec_embedding",
+    "embed_ledger",
+    "fts",
+];
 
 /// Entry point: open the DB at `cfg.db_path()` and load the NDJSON stream on
 /// stdin into it.

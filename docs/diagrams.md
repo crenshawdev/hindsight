@@ -23,9 +23,11 @@ flowchart TD
 
     subgraph sd[systemd]
         sock{{socket unit}}
+        timer{{embed timer unit}}
     end
 
     daemon[Capture daemon]
+    embed[Embed job\ntimer-driven batch\ndrain-and-exit]
     archive[(Verbatim archive\ncompressed, generational\nDURABLE, never mutated)]
     index[(SQLite index\nSession / Event / Artifact / Mention\nFTS5 BM25 + sqlite-vec\nREBUILDABLE)]
     ollama[Ollama\nqwen3-embedding:8b\nGPU opportunistic / CPU floor]
@@ -38,7 +40,10 @@ flowchart TD
     daemon -- sweep vs watermark --> tree
     daemon -- verbatim copy --> archive
     daemon -- normalize + scrub --> index
-    daemon -- embed request --> ollama
+
+    timer -- triggers --> embed
+    embed -- read records --> index
+    embed -- embed request --> ollama
     ollama -- vectors --> index
 
     session -- recall --> mcp
@@ -62,7 +67,6 @@ sequenceDiagram
     participant T as Transcript tree
     participant A as Verbatim archive
     participant X as SQLite index
-    participant O as Ollama
 
     H->>S: poke (one byte)
     S->>D: activate (or deliver to running daemon)
@@ -72,8 +76,7 @@ sequenceDiagram
     D->>A: verbatim copy (never mutated)
     D->>X: normalize, scrub secrets, upsert records + FTS
     Note over D,X: exact + lexical recall live here already
-    D->>O: embed profiles (deferred if GPU busy)
-    O-->>X: vectors -> semantic recall fills in
+    Note over D,X: embedding is NOT here. A separate timer-driven\nembed job reads records and writes vectors, so a\nlong deferring embed never fights the daemon's idle exit.
     D->>D: mark watermark, idle 15 min, then exit
 ```
 

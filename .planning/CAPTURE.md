@@ -20,6 +20,8 @@
 - [ ] (phase 3) Artifact FTS5 inner-join drops an artifact whose `source_event_uuid` matches no `event` row (D-04 says "every Artifact.content"); a LEFT JOIN would preserve it with a null session_id
 - [ ] (phase 3) Malformed line missing its `uuid` (empty `source_event_uuid`, empty-uuid events exempt from dedup) could fan an artifact out across every empty-uuid event, producing misattributed FTS rows; reachable only on malformed input plus a multi-session load
 - [ ] (phase 3) Doc-sync (standing rule 1): no dedicated store-schema ADR yet - the Phase-3 schema lives only in CONTEXT decisions D-05..D-11; consider promoting it to an ADR before Phase 5/6 build on it
+- [ ] (phase 4) Delivery mechanism superseded: Task 5 CPU fallback + Task 6 systemd timer were built to ADR 0004, but the locked embed redesign (hook-triggered, always-GPU, never CPU, no timer) supersedes both and is scoped to Phase 5. Relocate/replace the timer + CPU-fallback code in Phase 5; confirm before treating it as final
+- [ ] (phase 4) Cross-project entity carries one `project` (most-frequent) on its vector, so Phase 6's structural pre-filter cannot narrow a shared entity to its other projects. Per-project retrieval would need one vector per (entity, project) or a multi-valued project index (changes the D-09 shape) - flagged for John, left as-is pending decision
 
 ## Seeds
 

@@ -6,6 +6,7 @@
 mod archive;
 mod config;
 mod daemon;
+mod embed;
 mod normalize;
 mod poke;
 mod precompact;
@@ -44,6 +45,12 @@ enum Command {
     },
     /// Load a normalize NDJSON stream from stdin into the SQLite index.
     Load,
+    /// Assemble synthetic profiles and embed them into the vector store.
+    Embed {
+        /// Print the assembled profile units as NDJSON and write no vectors.
+        #[arg(long)]
+        dump_profiles: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -54,6 +61,7 @@ fn main() -> ExitCode {
         Command::Poke => report(poke::run()),
         Command::Normalize { session_dir } => report(normalize::run(&session_dir)),
         Command::Load => report(load_stream()),
+        Command::Embed { dump_profiles } => report(embed_run(dump_profiles)),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -69,6 +77,12 @@ fn main() -> ExitCode {
 /// configured `db_path()`.
 fn load_stream() -> anyhow::Result<()> {
     store::load::run(&config::Config::load()?)
+}
+
+/// Assemble synthetic profiles from the loaded index and embed them into the
+/// vector store (or dump them when `dump_profiles` is set).
+fn embed_run(dump_profiles: bool) -> anyhow::Result<()> {
+    embed::run(&config::Config::load()?, dump_profiles)
 }
 
 fn report(result: anyhow::Result<()>) -> ExitCode {

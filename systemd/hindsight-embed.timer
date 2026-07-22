@@ -1,0 +1,13 @@
+[Unit]
+Description=Hindsight profile embedding schedule
+
+[Timer]
+# Run hourly. Persistent=true catches up a run missed while the machine was off
+# (or the GPU was busy), so the vector store does not silently fall behind. The
+# embed job is the only trigger for embedding; manual `hindsight embed` is the
+# dev path.
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
