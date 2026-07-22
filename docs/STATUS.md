@@ -1,16 +1,24 @@
 # Status
 
-**Phase: capture and normalize built, store next.** Phases 1 and 2 are implemented and merged to main.
-The architecture is still settled end to end and recorded in the [decision records](decisions), narrated
-in [DESIGN.md](DESIGN.md), and drawn in [diagrams.md](diagrams.md); what changed is that the first two
-phases are code now, not just a plan.
+**Phase: capture, normalize, store, and fuzzy built, query next.** Phases 1 through 4 are implemented;
+1 through 3 are merged to main and 4 is on its feature branch. The architecture is still settled end to
+end and recorded in the [decision records](decisions), narrated in [DESIGN.md](DESIGN.md), and drawn in
+[diagrams.md](diagrams.md); what changed is that the first four phases are code now, not just a plan.
 
 Phase 1 (Capture) shipped the socket-activated daemon, the poke path, the systemd units, the watermark
 and full-tree sweep, the verbatim zstd archive writer, and the synchronous PreCompact hook. Phase 2
 (Normalize) shipped the `hindsight normalize` subcommand: it reads the archived `.zst` generations and
 emits tagged NDJSON Session / Event / Artifact / Mention records with the three-tier grain and a
-fixed-pattern secret scrub over indexed text only. Both phases passed their UAT with every acceptance
-criterion verified against the real binary.
+fixed-pattern secret scrub over indexed text only. Phase 3 (Store) shipped the `hindsight load`
+subcommand and the SQLite index: the relational schema, the loader that drains normalized NDJSON into
+it, and the FTS5 BM25 term index over indexed events and artifacts. Phase 4 (Fuzzy) shipped the
+`hindsight embed` subcommand: mechanical profile assembly from the loaded records (entity profiles,
+artifact wrappers, and prose chunks, carrying no secrets and no full-code bodies), a `ureq` Ollama
+client that embeds each profile as a 4096-dim vector, the two-stage sqlite-vec table backed by a
+resumable `embed_ledger` drain, `nvidia-smi` GPU-busy detection with defer-then-CPU fallback, and a
+systemd timer that runs the job off the capture daemon. Phases 1 through 3 passed their UAT with every
+acceptance criterion verified against the real binary; Phase 4's verification is its passing test suite
+and the plan's runnable checks, with the conversational UAT still to come.
 
 ## Decided
 
@@ -47,7 +55,7 @@ question.
 
 ## Build order
 
-Roughly bottom-up, each step independently testable against the archive. Done through step 3.
+Roughly bottom-up, each step independently testable against the archive. Done through step 5.
 
 1. **(done)** Repo scaffold: the Cargo project and the one static binary that carries the daemon, CLI,
    and MCP server as subcommands ([ADR 0012](decisions/0012-implementation-language-rust.md)).
@@ -55,10 +63,11 @@ Roughly bottom-up, each step independently testable against the archive. Done th
    hooks, the watermark, the verbatim archive writer (generational, compressed).
 3. **(done, Phase 2)** Normalize: the JSON parser (both historical transcript formats), the four record
    types, the three-tier grain, the secrets scrub.
-4. **(next, Phase 3)** Store: the SQLite schema, FTS5 wiring, sqlite-vec setup.
-5. Fuzzy: profile construction, Ollama embedding with the GPU-deferral scheduling, vectors into
-   sqlite-vec.
-6. Query: the two-path core, RRF fusion, archive resolution, then the MCP server and the CLI over it.
+4. **(done, Phase 3)** Store: the SQLite schema, the loader, FTS5 wiring, sqlite-vec setup.
+5. **(done, Phase 4)** Fuzzy: profile construction, Ollama embedding with the GPU-deferral scheduling,
+   vectors into sqlite-vec.
+6. **(next, Phase 5)** Query: the two-path core, RRF fusion, archive resolution, then the MCP server and
+   the CLI over it.
 7. Backfill: raise the retention window first (already done, see below), then run the empty-watermark
    sweep newest-first.
 8. Cutover: wire the hooks, disable the prior background memory tool.

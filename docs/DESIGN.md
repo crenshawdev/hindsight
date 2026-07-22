@@ -147,6 +147,15 @@ card, and it falls back to the CPU otherwise, which at this data size finishes t
 in an afternoon anyway. Gaming killed the idea of a warm resident model, not the GPU. See
 [ADR 0004](decisions/0004-embedder-and-gpu-scheduling.md).
 
+In the build this is a `hindsight embed` subcommand, a drain-and-exit batch run a systemd timer fires
+on a schedule, kept out of the capture daemon so a long deferring embed never fights the daemon's
+idle self-terminate. It reads records from the store, assembles the profiles, and posts them to Ollama
+over the local HTTP API, on the GPU when the card is free and on the CPU when a poll of the card says a
+game is holding it. What makes deferral safe is a small durable ledger. Each embedded unit lands its
+vector and a ledger stamp in one transaction, so an interrupted or CPU-fallback run resumes by
+re-embedding only what did not land, and a fresh load wipes the ledger in lockstep with the vectors so
+the next run rebuilds the whole corpus.
+
 The model is qwen3-embedding:8b, quantized, run locally through Ollama. The data is tiny, a couple
 hundred thousand records and on the order of fifty thousand vectors and growing, so this is a fits-in-memory problem,
 not a scaling one, and running the best local model I can fit costs nothing extra at this size. Local

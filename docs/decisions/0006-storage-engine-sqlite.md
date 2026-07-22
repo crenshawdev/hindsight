@@ -105,3 +105,32 @@ What this corrects: the 20k count becomes about 55k and growing, "exact scan, no
 "binary-coarse plus float-rescore," and "one query plan hands the scan a restricted id set" becomes
 "filter in SQL, rerank the survivors." What it does not touch is the decision this ADR exists for,
 everything in one SQLite file, which the measurement backed.
+
+## Amendment (2026-07-21, Phase 4 build): the delivered vec0 shape
+
+The coarse-then-rescore design above is now a table. `vec_embedding` is a single vec0 virtual table
+carrying both stages and the mapping back to a record:
+
+```
+CREATE VIRTUAL TABLE vec_embedding USING vec0(
+    embedding_coarse bit[4096],
+    embedding        float[4096] distance_metric=cosine,
+    project          text,
+    +unit_kind       text,
+    +source_id       text
+);
+```
+
+`embedding_coarse` is the binary-quantized first pass and `embedding` is the full-precision cosine
+rescore column, so both stages live in one table rather than two. `project` is a filterable metadata
+column, the materialized structural pre-filter the amendment above calls for, since vec0 narrows only
+on columns sitting on the vector table itself. `unit_kind` and `source_id` are auxiliary columns
+mapping each vector back to its source `entity`, `artifact`, or `event` record and on to the archive, a
+KNN rowid hit resolves to a record without a side table. `source_id` is the composite
+`{entity_type}:{entity}` for an entity so a file and a command sharing one surface string stay
+distinct.
+
+The pinned `sqlite-vec =0.1.9` carries all of it, `bit[N]` columns, `vec_quantize_binary()`, a
+per-column `distance_metric`, filterable metadata columns, and `+aux` columns, with no version bump.
+The table is derived and never authoritative, so a schema migration drops and recreates it (alongside
+its `embed_ledger`, [ADR 0004](0004-embedder-and-gpu-scheduling.md)) rather than migrating in place.

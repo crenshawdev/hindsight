@@ -64,3 +64,29 @@ game, and because it only loads while embedding it is not competing for that mem
 What actually gets embedded, the synthetic profiles rather than raw text, is
 [ADR 0005](0005-profile-construction-mechanical.md). The vectors are stored in the same SQLite file
 as everything else ([ADR 0006](0006-storage-engine-sqlite.md)).
+
+## Amendment (2026-07-21, Phase 4 build)
+
+The deferrable-embedder decision is built now, and the parts left open above resolved to these
+specifics.
+
+Transport is a light blocking `ureq` POST to Ollama's `/api/embed` at the local port, not the CLI and
+not a client crate. The request carries the model, the raw profile text as `input`, a short
+`keep_alive` so the model stays warm across a drain and unloads after, and an explicit 4096-dimension
+pin. CPU fallback is a per-request `options.num_gpu = 0`; the GPU path just omits it and takes Ollama's
+default. The dimension pin is enforced twice, once as the request-side intent and once as a hard
+post-response length check so a wrong-width vector fails loud rather than landing in the store.
+
+The deferrable queue is not the transcript watermark after all. It is a durable `embed_ledger` table
+that stamps each embedded unit with its `(unit_kind, source_id)` and an embedder version. A unit's
+vector and its ledger stamp commit in one transaction, so an interrupted or CPU-fallback run resumes
+exactly, re-embedding only what did not land. The ledger is wiped in lockstep with the vector table on
+every `hindsight load`, so an empty ledger safely means not-embedded and a fresh load re-embeds the
+corpus. This is the batch re-embed only; the per-session incremental trigger rides the same core later.
+
+GPU-busy detection polls `nvidia-smi` for utilization and free video memory against configured
+thresholds. A free card runs on the GPU, a busy card defers and re-polls on an interval until the card
+frees or a defer budget is spent and it falls back to CPU, and an absent `nvidia-smi` runs on CPU
+immediately. A busy card never fails the run. Embedding is a `hindsight embed` subcommand driven by a
+systemd timer, deliberately kept out of the capture daemon so a multi-hour deferring run cannot fight
+the daemon's idle self-terminate.
