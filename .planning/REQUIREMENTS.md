@@ -100,13 +100,13 @@ Deferred. Tracked, not in the current roadmap.
 | STO-03 | Phase 3 | Complete |
 | EMB-01 | Phase 4 | Pending |
 | EMB-02 | Phase 4 | Pending |
-| QRY-01 | Phase 5 | Pending |
-| QRY-02 | Phase 5 | Pending |
-| QRY-03 | Phase 5 | Pending |
-| IFC-01 | Phase 5 | Pending |
-| IFC-02 | Phase 5 | Pending |
-| MIG-01 | Phase 6 | Pending |
-| MIG-02 | Phase 6 | Pending |
+| QRY-01 | Phase 6 | Pending |
+| QRY-02 | Phase 6 | Pending |
+| QRY-03 | Phase 6 | Pending |
+| IFC-01 | Phase 6 | Pending |
+| IFC-02 | Phase 6 | Pending |
+| MIG-01 | Phase 7 | Pending |
+| MIG-02 | Phase 7 | Pending |
 
 **Coverage:** 22 v1 requirements, 22 mapped, 0 unmapped
 
