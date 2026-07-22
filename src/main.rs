@@ -7,6 +7,7 @@ mod archive;
 mod config;
 mod daemon;
 mod embed;
+mod mcp;
 mod normalize;
 mod poke;
 mod precompact;
@@ -80,6 +81,9 @@ enum Command {
         #[arg(long)]
         until: Option<String>,
     },
+    /// Serve the MCP recall server over stdio (rmcp JSON-RPC). The tokio runtime
+    /// is confined to this subcommand; the rest of the binary stays synchronous.
+    Mcp,
 }
 
 fn main() -> ExitCode {
@@ -103,6 +107,7 @@ fn main() -> ExitCode {
             since,
             until,
         } => report(run_search(query, exact, entity_type, project, since, until)),
+        Command::Mcp => report(run_mcp()),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -147,6 +152,12 @@ fn run_search(
         since,
         until,
     )
+}
+
+/// Serve the MCP recall server over stdio (D-09). The tokio runtime is built
+/// inside `mcp::run`, never on `main`, so the rest of the binary stays synchronous.
+fn run_mcp() -> anyhow::Result<()> {
+    mcp::run(&config::Config::load()?)
 }
 
 fn report(result: anyhow::Result<()>) -> ExitCode {
