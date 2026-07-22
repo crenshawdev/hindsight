@@ -6,6 +6,7 @@
 
 pub mod exact;
 pub mod keyword;
+pub mod vector;
 
 use anyhow::Result;
 
