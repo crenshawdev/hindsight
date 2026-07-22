@@ -140,21 +140,27 @@ video memory keeping itself warm while a game wants that memory is a fight I did
 
 The thing that resolved it is that embedding is deferrable and nothing waits on it. The archive
 and the parse happen the instant a session lands, and those give you exact and keyword recall on
-their own. The embeddings are a step downstream that can lag for hours and lose nothing but a
-little freshness on the fuzzy path. So the GPU became an opportunistic accelerator, not a resident
-service. The model loads only while it is actually embedding, it defers when a game is holding the
-card, and it falls back to the CPU otherwise, which at this data size finishes the whole backfill
-in an afternoon anyway. Gaming killed the idea of a warm resident model, not the GPU. See
+their own. The embeddings are a step downstream that can lag and lose nothing but a little freshness
+on the fuzzy path. So the GPU became an accelerator the embed step reaches for when there is work,
+not a resident service parked in video memory keeping itself warm. The model loads only while it is
+actually embedding. Gaming killed the idea of a warm resident model, not the GPU. See
 [ADR 0004](decisions/0004-embedder-and-gpu-scheduling.md).
 
-In the build this is a `hindsight embed` subcommand, a drain-and-exit batch run a systemd timer fires
-on a schedule, kept out of the capture daemon so a long deferring embed never fights the daemon's
-idle self-terminate. It reads records from the store, assembles the profiles, and posts them to Ollama
-over the local HTTP API, on the GPU when the card is free and on the CPU when a poll of the card says a
-game is holding it. What makes deferral safe is a small durable ledger. Each embedded unit lands its
-vector and a ledger stamp in one transaction, so an interrupted or CPU-fallback run resumes by
-re-embedding only what did not land, and a fresh load wipes the ledger in lockstep with the vectors so
-the next run rebuilds the whole corpus.
+In the build this is a `hindsight embed` subcommand, and the session-lifecycle hooks fire it. A hook
+runs `hindsight embed --detach`, which self-detaches with `setsid` into its own session and returns at
+once so the hook is not blocked, and the detached child runs the drain. It runs out of the capture
+daemon so a long drain never fights the daemon's idle self-terminate, and it runs unconditionally on the
+GPU, every request pinned to full GPU offload with no CPU path, because an 8B model on the processor is
+a slower, worse answer nobody is waiting on and the right move when the card is busy is to catch up on
+the next hook. The child reads records from the store, assembles the profiles, and posts them to Ollama
+over the local HTTP API. A filesystem lock single-flights the drain so two hooks firing close together
+never double-embed, and a single Ollama error is recorded per unit and skipped rather than aborting the
+run. What makes all of that safe to interrupt is a small durable ledger. Each embedded unit lands its
+vector and a ledger stamp in one transaction, so an interrupted run resumes by re-embedding only what
+did not land, and a fresh load wipes the ledger in lockstep with the vectors so the next run rebuilds
+the whole corpus. `hindsight embed --status` reads a run record and the ledger to report whether a drain
+is running, stalled, done, or has failures. See
+[ADR 0013](decisions/0013-embed-delivery-hook-gpu.md).
 
 The model is qwen3-embedding:8b, quantized, run locally through Ollama. The data is tiny, a couple
 hundred thousand records and on the order of fifty thousand vectors and growing, so this is a fits-in-memory problem,

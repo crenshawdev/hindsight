@@ -12,28 +12,33 @@
 //! pre-filter, and `+unit_kind`/`+source_id` auxiliary columns mapping each vector
 //! back to its source `entity`/`artifact`/`event` record and on to the archive.
 //! `embed_ledger` is the durable resumable queue (D-06): it stamps every embedded
-//! unit under its embedder version so a deferred, interrupted, or CPU-fallback run
-//! resumes without re-embedding, and it is wiped in lockstep with `vec_embedding`
-//! on every `hindsight load` so ledger-empty safely means not-embedded.
+//! unit under its embedder version so an interrupted run resumes without
+//! re-embedding, and it is wiped in lockstep with `vec_embedding` on every
+//! `hindsight load` so ledger-empty safely means not-embedded. Its per-unit
+//! `status`/`attempts`/`last_error` columns and the sibling `embed_run` table carry
+//! the DB-backed drain status `hindsight embed --status` reads (D-07).
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// Bumped when the relational or vector schema shape changes. Bumped to `2` in
-/// Phase 4 when `vec_embedding` gained the two-stage shape and `embed_ledger`.
-pub const SCHEMA_VERSION: &str = "2";
+/// Phase 4 when `vec_embedding` gained the two-stage shape and `embed_ledger`, and
+/// to `3` in Phase 5 when `embed_ledger` gained per-unit status columns and the
+/// `embed_run` table landed (D-07).
+pub const SCHEMA_VERSION: &str = "3";
 /// The normalize parser contract the loaded rows were produced under.
 pub const PARSER_VERSION: &str = "1";
 /// The secret-scrub ruleset version applied upstream in normalize.
 pub const SCRUB_RULESET_VERSION: &str = "1";
 
 /// Non-zero `PRAGMA user_version` stamp so an opened file is detectably a
-/// hindsight index at a known schema generation (D-11). Bumped to `2` alongside
-/// `SCHEMA_VERSION` when the vector shape changed; the migration guard in `apply`
-/// drops both derived tables (`vec_embedding` and `embed_ledger`) in lockstep on a
-/// below-version file so an old single-column file is rebuilt on the new shape and
-/// no stale ledger stamps survive an emptied vector table.
-pub const USER_VERSION: i64 = 2;
+/// hindsight index at a known schema generation (D-11). Bumped to `3` alongside
+/// `SCHEMA_VERSION` when `embed_ledger` gained status columns and `embed_run`
+/// landed (D-07); the migration guard in `apply` drops all three derived tables
+/// (`vec_embedding`, `embed_ledger`, and `embed_run`) in lockstep on a below-version
+/// file so an old column-short `embed_ledger` is rebuilt on the new shape and no
+/// stale ledger stamps survive an emptied vector table.
+pub const USER_VERSION: i64 = 3;
 
 /// Create every table and stamp provenance. Idempotent: safe to re-run on an
 /// existing DB, since `open_db` re-applies it on each run.
@@ -132,24 +137,27 @@ pub fn apply(conn: &Connection) -> Result<()> {
     )
     .context("creating fts5 index")?;
 
-    // Migration guard (D-09): a below-version file carries the old single-column
-    // `vec_embedding`; drop it so the two-stage shape is (re)created. Both derived
-    // tables - `vec_embedding` and its `embed_ledger` - are dropped in lockstep on
-    // a below-version file so they are recreated empty together, preserving the
+    // Migration guard (D-09, D-07): a below-version file carries an older derived
+    // shape - the old single-column `vec_embedding`, or a column-short
+    // `embed_ledger` with no `status`/`attempts`/`last_error` that `CREATE ... IF
+    // NOT EXISTS` would leave untouched. All three derived tables - `vec_embedding`,
+    // `embed_ledger`, and `embed_run` - are dropped in lockstep on a below-version
+    // file so they are recreated on the new shape together, preserving the
     // ledger/vector invariant (D-06): a future USER_VERSION migration must not
     // empty `vec_embedding` while leaving stale ledger stamps, or a later
     // `hindsight embed` would skip everything as already-embedded and vector
-    // search would silently break with no re-embed. Dropping is safe because both
-    // tables are derived, never authoritative (the archive is ground truth), they
-    // are already wiped on every `hindsight load`, and D-10 re-embeds the whole
+    // search would silently break with no re-embed. Dropping is safe because all
+    // three tables are derived, never authoritative (the archive is ground truth),
+    // they are already wiped on every `hindsight load`, and D-10 re-embeds the whole
     // corpus after a load. A same-version reopen (existing_version == USER_VERSION)
-    // does NOT drop, so vectors written by a prior `embed` and their ledger stamps
-    // persist for later query. A fresh file (existing_version == 0) hits a no-op
-    // `DROP ... IF EXISTS`.
+    // does NOT drop, so vectors written by a prior `embed`, their ledger stamps, and
+    // the run history persist for later query and `--status`. A fresh file
+    // (existing_version == 0) hits a no-op `DROP ... IF EXISTS`.
     if existing_version < USER_VERSION {
         conn.execute_batch(
             "DROP TABLE IF EXISTS vec_embedding;
-             DROP TABLE IF EXISTS embed_ledger;",
+             DROP TABLE IF EXISTS embed_ledger;
+             DROP TABLE IF EXISTS embed_run;",
         )
         .context("dropping pre-migration derived tables in lockstep")?;
     }
@@ -174,20 +182,50 @@ pub fn apply(conn: &Connection) -> Result<()> {
     )
     .context("creating vec_embedding vec0 table")?;
 
-    // Resumable embed ledger (D-06): one row per embedded unit under its embedder
-    // version. The non-dump embed drain stamps this in the same transaction as the
-    // vector insert, so a resumed run's skip-check is exact. Wiped in lockstep
-    // with `vec_embedding` on every `hindsight load` (see load.rs FRESH_BUILD_TABLES).
+    // Resumable embed ledger (D-06): one row per embed-attempted unit under its
+    // embedder version. The non-dump embed drain upserts this in the same
+    // transaction as the vector insert on success, so a resumed run's skip-check is
+    // exact. Per-unit status columns (D-07): `status` is `'done'` or `'failed'`,
+    // `attempts` accumulates across retries, and `last_error` holds the last failure
+    // string (NULL on success). A `'failed'` row (no vector) records a unit the
+    // drain caught and skipped under continue-on-error. Wiped in lockstep with
+    // `vec_embedding` on every `hindsight load` (see load.rs FRESH_BUILD_TABLES).
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS embed_ledger (
              unit_kind        TEXT NOT NULL,
              source_id        TEXT NOT NULL,
              embedder_version TEXT NOT NULL,
              embedded_at      TEXT NOT NULL,
+             status           TEXT NOT NULL DEFAULT 'done',
+             attempts         INTEGER NOT NULL DEFAULT 0,
+             last_error       TEXT,
              PRIMARY KEY (unit_kind, source_id)
          );",
     )
     .context("creating embed_ledger table")?;
+
+    // Run-level drain status (D-07): one row per `hindsight embed` drain, carrying
+    // its start time, a heartbeat refreshed around every unit, the drain's pid, and
+    // running counts. `--status` reads the latest row (max `id`) and compares
+    // `now - heartbeat_at` against a stale threshold to tell a live *running* drain
+    // from a *stalled* (killed or hung) one; `state` is `'running'` while draining
+    // and `'done'` at terminal. `started_at`/`heartbeat_at` are unix epoch seconds.
+    // Derived and reset on every `hindsight load` so `--status` never reports a
+    // stale prior run against a freshly loaded corpus.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS embed_run (
+             id           INTEGER PRIMARY KEY AUTOINCREMENT,
+             started_at   INTEGER NOT NULL,
+             heartbeat_at INTEGER NOT NULL,
+             pid          INTEGER NOT NULL,
+             state        TEXT NOT NULL,
+             total        INTEGER NOT NULL,
+             embedded     INTEGER NOT NULL,
+             skipped      INTEGER NOT NULL,
+             failed       INTEGER NOT NULL
+         );",
+    )
+    .context("creating embed_run table")?;
 
     // Provenance stamp (D-11). PRAGMA user_version takes a literal, not a bound
     // parameter.
@@ -233,6 +271,7 @@ mod tests {
             "mention",
             "vec_embedding",
             "embed_ledger",
+            "embed_run",
             "meta",
         ] {
             let n: i64 = conn
@@ -244,6 +283,16 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 1, "table {table} should exist");
         }
+
+        // The Phase 5 status columns (D-07) are present on `embed_ledger`.
+        let has_status: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('embed_ledger') WHERE name = 'status'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_status, 1, "embed_ledger must carry a status column");
 
         let user_version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))

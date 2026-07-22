@@ -18,7 +18,7 @@ it.
 - [x] **Phase 2: Normalize** - parse archived transcripts into the four record types with grain and scrubbing
 - [x] **Phase 3: Store** - persist records into one SQLite file with FTS5 and sqlite-vec
 - [x] **Phase 4: Fuzzy** - synthetic profiles embedded via Ollama into sqlite-vec
-- [ ] **Phase 5: Embed delivery** - hook-triggered, always-GPU embedding, single-flighted and resumable
+- [x] **Phase 5: Embed delivery** - hook-triggered, always-GPU embedding, single-flighted and resumable
 - [ ] **Phase 6: Query and surfaces** - two-path recall over an MCP server and a CLI
 - [ ] **Phase 7: Backfill and cutover** - ingest existing history and go live
 

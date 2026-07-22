@@ -23,17 +23,20 @@ use crate::store::open_db;
 /// (D-10). `vec_embedding` and its `embed_ledger` are wiped in lockstep so a
 /// reload cannot leave orphaned vectors or a stale embed stamp behind fresh
 /// relational rows, and so ledger-empty safely means not-embedded: the next
-/// `hindsight embed` re-embeds the whole corpus (D-06, D-10). `fts` is cleared in
-/// step with the relational tables so a reload rebuilds the FTS index with no
-/// stale rows from a prior load. `meta` is deliberately NOT here - its provenance
-/// stamp survives a reload and is re-seeded idempotently by the schema.
-const FRESH_BUILD_TABLES: [&str; 7] = [
+/// `hindsight embed` re-embeds the whole corpus (D-06, D-10). `embed_run` is wiped
+/// with them so `hindsight embed --status` after a fresh load reports no stale
+/// prior run against the just-loaded corpus (D-07). `fts` is cleared in step with
+/// the relational tables so a reload rebuilds the FTS index with no stale rows from
+/// a prior load. `meta` is deliberately NOT here - its provenance stamp survives a
+/// reload and is re-seeded idempotently by the schema.
+const FRESH_BUILD_TABLES: [&str; 8] = [
     "session",
     "event",
     "artifact",
     "mention",
     "vec_embedding",
     "embed_ledger",
+    "embed_run",
     "fts",
 ];
 
