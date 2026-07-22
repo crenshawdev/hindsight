@@ -157,8 +157,13 @@ fn insert_record(tx: &Transaction, record: &Record) -> Result<()> {
             }
         }
         Record::Artifact(a) => {
+            // OR IGNORE: a resumed/forked session's transcript carries its
+            // parent's events verbatim, so a multi-session stream can replay
+            // the same artifact_id ({event-uuid}-{n}) with identical content.
+            // First write wins; under the newest-first backfill ordering that
+            // is the newest session's copy.
             tx.execute(
-                "INSERT INTO artifact
+                "INSERT OR IGNORE INTO artifact
                     (artifact_id, kind, path, language, content, request_bundle,
                      source_event_uuid)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
