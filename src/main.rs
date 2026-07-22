@@ -7,6 +7,7 @@ mod archive;
 mod config;
 mod daemon;
 mod embed;
+mod ingest;
 mod mcp;
 mod normalize;
 mod poke;
@@ -47,6 +48,10 @@ enum Command {
     },
     /// Load a normalize NDJSON stream from stdin into the SQLite index.
     Load,
+    /// Incremental capture->index->embed pass (Phase 7): sweep, session-scoped
+    /// re-index of new-or-changed sessions, then a detached embed drain. The
+    /// hook-driven live-ingest entrypoint; idempotent and single-flight.
+    Ingest,
     /// Assemble synthetic profiles and embed them into the vector store.
     Embed {
         /// Print the assembled profile units as NDJSON and write no vectors.
@@ -94,6 +99,7 @@ fn main() -> ExitCode {
         Command::Poke => report(poke::run()),
         Command::Normalize { session_dir } => report(normalize::run(&session_dir)),
         Command::Load => report(load_stream()),
+        Command::Ingest => report(ingest_run()),
         Command::Embed {
             dump_profiles,
             detach,
@@ -123,6 +129,12 @@ fn main() -> ExitCode {
 /// configured `db_path()`.
 fn load_stream() -> anyhow::Result<()> {
     store::load::run(&config::Config::load()?)
+}
+
+/// Incremental live-ingest pass (Phase 7): sweep, re-index new-or-changed sessions,
+/// then trigger a detached embed drain. The hook-driven entrypoint.
+fn ingest_run() -> anyhow::Result<()> {
+    ingest::run(&config::Config::load()?)
 }
 
 /// Assemble synthetic profiles from the loaded index and embed them into the
