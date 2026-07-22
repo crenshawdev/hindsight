@@ -98,8 +98,8 @@ Deferred. Tracked, not in the current roadmap.
 | STO-01 | Phase 3 | Complete |
 | STO-02 | Phase 3 | Complete |
 | STO-03 | Phase 3 | Complete |
-| EMB-01 | Phase 4 | Pending |
-| EMB-02 | Phase 4 | Pending |
+| EMB-01 | Phase 4 | Complete |
+| EMB-02 | Phase 4 | Complete |
 | QRY-01 | Phase 6 | Pending |
 | QRY-02 | Phase 6 | Pending |
 | QRY-03 | Phase 6 | Pending |
