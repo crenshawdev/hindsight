@@ -19,7 +19,7 @@ it.
 - [x] **Phase 3: Store** - persist records into one SQLite file with FTS5 and sqlite-vec
 - [x] **Phase 4: Fuzzy** - synthetic profiles embedded via Ollama into sqlite-vec
 - [x] **Phase 5: Embed delivery** - hook-triggered, always-GPU embedding, single-flighted and resumable
-- [ ] **Phase 6: Query and surfaces** - two-path recall over an MCP server and a CLI
+- [x] **Phase 6: Query and surfaces** - two-path recall over an MCP server and a CLI
 - [ ] **Phase 7: Backfill and cutover** - ingest existing history and go live
 
 ## Phase Details
