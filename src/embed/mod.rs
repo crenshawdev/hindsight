@@ -205,10 +205,25 @@ pub fn run(cfg: &Config, dump_profiles: bool, detach: bool, status: bool) -> Res
     .context("inserting embed_run record")?;
     let run_id = conn.last_insert_rowid();
 
-    // Continue-on-error drain (D-06): a single embed failure is caught, recorded,
-    // and counted; the drain proceeds to the next unit rather than aborting.
-    let counts = drain(&mut conn, &units, &embedder_version, run_id, |u| {
-        ollama::embed_document(&cfg.embed, &u.text)
+    // Continue-on-error drain (D-06): a batch embed failure is caught and the batch
+    // is retried unit-by-unit so one poison input fails alone instead of failing
+    // (and accruing give-up attempts on) its whole batch. A unit that still fails
+    // on its own is a real per-unit failure, recorded and counted; the drain
+    // proceeds rather than aborting.
+    let counts = drain(&mut conn, &units, &embedder_version, run_id, |batch| {
+        let texts: Vec<&str> = batch.iter().map(|u| u.text.as_str()).collect();
+        let results: Vec<Result<Vec<f32>>> = match ollama::embed_documents(&cfg.embed, &texts) {
+            Ok(vectors) => vectors.into_iter().map(Ok).collect(),
+            Err(batch_err) => batch
+                .iter()
+                .map(|u| {
+                    ollama::embed_document(&cfg.embed, &u.text).map_err(|e| {
+                        anyhow::anyhow!("{e:#} (isolated after batch error: {batch_err:#})")
+                    })
+                })
+                .collect(),
+        };
+        results
     })?;
 
     // Terminal state for the run (D-07): done with final counts. A `--status` read
@@ -256,27 +271,32 @@ struct DrainCounts {
     failed: usize,
 }
 
-/// The testable drain core (D-06, D-07): walk `units`, skip already-done units and
-/// permanently-failed ones, call `embed_fn` for the rest, and land each result in
-/// the ledger - a vector plus a `'done'` stamp on success, a `'failed'` row with the
-/// error string on failure - refreshing the run's heartbeat and counts around every
-/// unit. `embed_fn` is injected so a test can drive the error path without Ollama.
+/// The testable drain core (D-06, D-07): skip already-done and permanently-failed
+/// units, then embed the rest in batches of `EMBED_BATCH_SIZE`. `embed_fn` takes a
+/// batch of pending units and returns one result per unit, in order; each result is
+/// landed in the ledger - a vector plus a `'done'` stamp on success, a `'failed'`
+/// row with the error string on failure - with the whole batch committed in one
+/// transaction and the run's heartbeat and counts refreshed around each batch.
+/// `embed_fn` is injected so a test can drive the error path without Ollama, and so
+/// the batch-then-isolate fallback lives in the caller.
 fn drain(
     conn: &mut rusqlite::Connection,
     units: &[profile::ProfileUnit],
     embedder_version: &str,
     run_id: i64,
-    mut embed_fn: impl FnMut(&profile::ProfileUnit) -> Result<Vec<f32>>,
+    mut embed_fn: impl FnMut(&[&profile::ProfileUnit]) -> Vec<Result<Vec<f32>>>,
 ) -> Result<DrainCounts> {
     let mut skipped = 0usize;
     let mut embedded = 0usize;
     let mut failed = 0usize;
 
+    // First pass - skip check (D-06): a `'done'` row under the current version is
+    // already embedded (the atomic vector+ledger commit makes this exact), and a
+    // `'failed'` row at the attempts cap is a permanent failure counted as such and
+    // not retried. A `'failed'` row under the cap falls through into `pending`.
+    // Partitioning up front means only truly-pending units are batched to Ollama.
+    let mut pending: Vec<&profile::ProfileUnit> = Vec::new();
     for unit in units {
-        // Skip check (D-06): a `'done'` row under the current version is already
-        // embedded (the atomic vector+ledger commit makes this exact), and a
-        // `'failed'` row at the attempts cap is a permanent failure counted as such
-        // and not retried. A `'failed'` row under the cap falls through to a retry.
         let existing: Option<(String, i64)> = conn
             .query_row(
                 "SELECT status, attempts FROM embed_ledger
@@ -296,47 +316,59 @@ fn drain(
                 continue;
             }
         }
+        pending.push(unit);
+    }
+    // Reflect the skip/permanent-fail tally before the first batch lands, so an
+    // early `--status` read after a resume shows the skipped count immediately.
+    update_run_counts(conn, run_id, embedded, skipped, failed)?;
 
-        // Heartbeat immediately before and after the (blocking) embed call so a
-        // live drain reads as running even across a slow unit (D-07).
+    for batch in pending.chunks(ollama::EMBED_BATCH_SIZE) {
+        // Heartbeat immediately before and after the (blocking) batch embed so a
+        // live drain reads as running even across a slow batch (D-07).
         touch_heartbeat(conn, run_id)?;
-        let result = embed_fn(unit);
+        let results = embed_fn(batch);
         touch_heartbeat(conn, run_id)?;
+
+        // The injected `embed_fn` contract is one result per input unit, in order;
+        // a mismatch would misalign vectors onto units, so fail loud rather than zip.
+        if results.len() != batch.len() {
+            bail!(
+                "embed_fn returned {} results for a {}-unit batch",
+                results.len(),
+                batch.len()
+            );
+        }
 
         let embedded_at = now_rfc3339();
-        match result {
-            Ok(vector) => {
-                let blob = vector_blob(&vector);
-                // Vector insert and ledger stamp commit together: a crash lands
-                // both or neither, so no vector ever exists without its stamp.
-                let tx = conn.transaction().context("beginning per-unit embed tx")?;
-                tx.execute(
-                    "INSERT INTO vec_embedding
-                        (embedding_coarse, embedding, project, unit_kind, source_id)
-                     VALUES (vec_quantize_binary(?1), ?1, ?2, ?3, ?4)",
-                    rusqlite::params![blob, unit.project, unit.unit_kind, unit.source_id],
-                )
-                .context("inserting vec_embedding row")?;
-                upsert_ledger(&tx, unit, embedder_version, &embedded_at, "done", None)?;
-                tx.commit().context("committing per-unit embed tx")?;
-                embedded += 1;
-            }
-            Err(e) => {
-                // Continue-on-error (D-06): record the failure, write no vector, and
-                // move on. The `attempts` counter accumulates via the upsert so the
-                // give-up cap can retire a deterministically failing unit.
-                let msg = format!("{e:#}");
-                upsert_ledger(
-                    conn,
-                    unit,
-                    embedder_version,
-                    &embedded_at,
-                    "failed",
-                    Some(&msg),
-                )?;
-                failed += 1;
+        // One transaction per batch: every vector+ledger stamp in the batch lands or
+        // none does, so a crash mid-batch rolls the batch back and it re-embeds next
+        // run (resumable, D-06) - never a vector without its stamp.
+        let tx = conn.transaction().context("beginning per-batch embed tx")?;
+        for (unit, result) in batch.iter().zip(results) {
+            match result {
+                Ok(vector) => {
+                    let blob = vector_blob(&vector);
+                    tx.execute(
+                        "INSERT INTO vec_embedding
+                            (embedding_coarse, embedding, project, unit_kind, source_id)
+                         VALUES (vec_quantize_binary(?1), ?1, ?2, ?3, ?4)",
+                        rusqlite::params![blob, unit.project, unit.unit_kind, unit.source_id],
+                    )
+                    .context("inserting vec_embedding row")?;
+                    upsert_ledger(&tx, unit, embedder_version, &embedded_at, "done", None)?;
+                    embedded += 1;
+                }
+                Err(e) => {
+                    // Continue-on-error (D-06): record the failure, write no vector.
+                    // The `attempts` counter accumulates via the upsert so the
+                    // give-up cap can retire a deterministically failing unit.
+                    let msg = format!("{e:#}");
+                    upsert_ledger(&tx, unit, embedder_version, &embedded_at, "failed", Some(&msg))?;
+                    failed += 1;
+                }
             }
         }
+        tx.commit().context("committing per-batch embed tx")?;
 
         update_run_counts(conn, run_id, embedded, skipped, failed)?;
     }
@@ -583,13 +615,18 @@ mod tests {
         let run_id = open_run(&conn, units.len() as i64);
 
         // embed_fn fails only on source_id "2"; the other two succeed with a
-        // full-width fake vector.
-        let counts = drain(&mut conn, &units, ev, run_id, |u| {
-            if u.source_id == "2" {
-                Err(anyhow::anyhow!("simulated ollama failure"))
-            } else {
-                Ok(vec![0.1_f32; ollama::EMBED_DIMS])
-            }
+        // full-width fake vector. The batch closure returns one result per unit.
+        let counts = drain(&mut conn, &units, ev, run_id, |batch| {
+            batch
+                .iter()
+                .map(|u| {
+                    if u.source_id == "2" {
+                        Err(anyhow::anyhow!("simulated ollama failure"))
+                    } else {
+                        Ok(vec![0.1_f32; ollama::EMBED_DIMS])
+                    }
+                })
+                .collect()
         })
         .unwrap();
 
@@ -630,9 +667,14 @@ mod tests {
         // A second drain never calls `embed_fn` for the already-done units.
         let run2 = open_run(&conn, units.len() as i64);
         let mut called = Vec::new();
-        let counts2 = drain(&mut conn, &units, ev, run2, |u| {
-            called.push(u.source_id.clone());
-            Ok(vec![0.2_f32; ollama::EMBED_DIMS])
+        let counts2 = drain(&mut conn, &units, ev, run2, |batch| {
+            batch
+                .iter()
+                .map(|u| {
+                    called.push(u.source_id.clone());
+                    Ok(vec![0.2_f32; ollama::EMBED_DIMS])
+                })
+                .collect()
         })
         .unwrap();
         assert_eq!(counts2.skipped, 2, "the two done units are skipped");

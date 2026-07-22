@@ -35,6 +35,31 @@ const QUERY_TASK: &str =
     "Given a search query, retrieve relevant records from past Claude Code coding \
      sessions (files, commands, code, and discussion) that answer it";
 
+/// Documents per `/api/embed` call on the drain path. Ollama's `input` accepts an
+/// array and embeds the whole batch in one forward pass, so one POST keeps the GPU
+/// fed across many short units instead of one network round-trip per unit (which
+/// left the card ~75% idle waiting between requests). Sized to keep the card busy
+/// without risking a VRAM spike on the 8B model; tune here if the corpus profile
+/// texts grow. The query path stays single-input (one query, one call).
+pub const EMBED_BATCH_SIZE: usize = 32;
+
+/// A batch embed request: `input` is an array of texts (Ollama embeds each
+/// independently and returns one vector per input, in order). The single-input
+/// `embed_document` is a one-element case of this; `embed_query` keeps its own
+/// single-input request because it also carries the query instruction prefix.
+#[derive(Serialize)]
+struct EmbedBatchRequest<'a> {
+    model: &'a str,
+    input: &'a [&'a str],
+    keep_alive: &'a str,
+    /// Request-side dimension pin (D-01). `qwen3-embedding:8b` returns native
+    /// 4096, so this states intent; Ollama accepts and ignores it for this model.
+    dimensions: usize,
+    /// Always sent (D-05, ADR 0013): pins full GPU offload so no request silently
+    /// partial-offloads to CPU under VRAM pressure.
+    options: EmbedOptions,
+}
+
 #[derive(Serialize)]
 struct EmbedRequest<'a> {
     model: &'a str,
@@ -64,9 +89,30 @@ struct EmbedResponse {
 /// query-side instruction template is a Phase 5 query concern, documents embed
 /// raw (ADR 0005's "describe it, get the name" asymmetry lives on the query side).
 pub fn embed_document(cfg: &EmbedConfig, text: &str) -> Result<Vec<f32>> {
-    let req = EmbedRequest {
+    let mut vectors = embed_documents(cfg, &[text])?;
+    vectors
+        .pop()
+        .context("Ollama /api/embed returned no embeddings")
+}
+
+/// Embed a batch of document texts in one `/api/embed` call and return one
+/// 4096-dim vector per input, in input order (D-01). This is the drain's
+/// throughput path: a single POST embeds up to `EMBED_BATCH_SIZE` units so the GPU
+/// stays busy instead of idling between per-unit round-trips. Documents embed raw
+/// (no instruction prefix); only the query side is wrapped (`embed_query`).
+///
+/// The response length must equal the input length and every vector must be
+/// `EMBED_DIMS` wide, or the call fails loud (ADR 0004 dimension contract) rather
+/// than landing a short or misaligned batch. The whole call is atomic to the
+/// caller: it either returns every vector or errors, so the drain's per-unit
+/// fallback can isolate a poison input.
+pub fn embed_documents(cfg: &EmbedConfig, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let req = EmbedBatchRequest {
         model: &cfg.model,
-        input: text,
+        input: texts,
         keep_alive: &cfg.keep_alive,
         dimensions: EMBED_DIMS,
         options: EmbedOptions {
@@ -81,22 +127,28 @@ pub fn embed_document(cfg: &EmbedConfig, text: &str) -> Result<Vec<f32>> {
         .into_json()
         .context("parsing Ollama /api/embed response")?;
 
-    let vector = resp
-        .embeddings
-        .into_iter()
-        .next()
-        .context("Ollama /api/embed returned no embeddings")?;
-
-    // Hard enforcement of the dimension contract (ADR 0004): a width mismatch
-    // must fail loud, never silently write a wrong-shaped vector to the store.
-    if vector.len() != EMBED_DIMS {
+    // The array response must line up one-to-one with the inputs, or a caller that
+    // zips vectors back onto units would misattribute them.
+    if resp.embeddings.len() != texts.len() {
         bail!(
-            "Ollama returned a {}-dim vector, expected {EMBED_DIMS} (model {})",
-            vector.len(),
+            "Ollama returned {} embeddings for a {}-input batch (model {})",
+            resp.embeddings.len(),
+            texts.len(),
             cfg.model
         );
     }
-    Ok(vector)
+    // Hard enforcement of the dimension contract (ADR 0004): a width mismatch on
+    // ANY vector fails the batch loud, never silently writes a wrong-shaped vector.
+    for vector in &resp.embeddings {
+        if vector.len() != EMBED_DIMS {
+            bail!(
+                "Ollama returned a {}-dim vector, expected {EMBED_DIMS} (model {})",
+                vector.len(),
+                cfg.model
+            );
+        }
+    }
+    Ok(resp.embeddings)
 }
 
 /// Embed a query and return its 4096-dim vector (D-04). Distinct from
