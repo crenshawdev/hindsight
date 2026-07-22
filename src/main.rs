@@ -10,6 +10,7 @@ mod embed;
 mod normalize;
 mod poke;
 mod precompact;
+mod query;
 mod store;
 mod sweep;
 mod watermark;
@@ -58,6 +59,27 @@ enum Command {
         #[arg(long)]
         status: bool,
     },
+    /// Ground-truth search over the index (no embedder, no GPU): a positional
+    /// keyword query (FTS5) or `--exact <entity>` recall-complete listing (D-10).
+    Search {
+        /// Positional keyword query, run over the FTS5 index.
+        query: Option<String>,
+        /// Recall-complete exact listing for this entity (file/command name).
+        #[arg(long)]
+        exact: Option<String>,
+        /// Restrict an `--exact` listing to this entity_type (`file`/`command`).
+        #[arg(long)]
+        entity_type: Option<String>,
+        /// Structural pre-filter: only this project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Time pre-filter: RFC3339 lower bound (inclusive).
+        #[arg(long)]
+        since: Option<String>,
+        /// Time pre-filter: RFC3339 upper bound (inclusive).
+        #[arg(long)]
+        until: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -73,6 +95,14 @@ fn main() -> ExitCode {
             detach,
             status,
         } => report(embed_run(dump_profiles, detach, status)),
+        Command::Search {
+            query,
+            exact,
+            entity_type,
+            project,
+            since,
+            until,
+        } => report(run_search(query, exact, entity_type, project, since, until)),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -96,6 +126,27 @@ fn load_stream() -> anyhow::Result<()> {
 /// return immediately (D-01).
 fn embed_run(dump_profiles: bool, detach: bool, status: bool) -> anyhow::Result<()> {
     embed::run(&config::Config::load()?, dump_profiles, detach, status)
+}
+
+/// Ground-truth search (D-10): open the configured DB and run the no-model
+/// keyword or exact-listing path (`hindsight search`).
+fn run_search(
+    query: Option<String>,
+    exact: Option<String>,
+    entity_type: Option<String>,
+    project: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+) -> anyhow::Result<()> {
+    query::run_search(
+        &config::Config::load()?,
+        query,
+        exact,
+        entity_type,
+        project,
+        since,
+        until,
+    )
 }
 
 fn report(result: anyhow::Result<()>) -> ExitCode {
