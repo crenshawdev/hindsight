@@ -32,7 +32,7 @@ pub fn run(session_dir: &Path) -> Result<()> {
 }
 
 /// Inner form writing to an arbitrary sink, so tests can capture the stream.
-fn run_to<W: Write>(session_dir: &Path, w: &mut W) -> Result<()> {
+pub(crate) fn run_to<W: Write>(session_dir: &Path, w: &mut W) -> Result<()> {
     let project = session_dir
         .parent()
         .and_then(|p| p.file_name())
@@ -65,6 +65,37 @@ fn run_to<W: Write>(session_dir: &Path, w: &mut W) -> Result<()> {
     // Scrub fixed-pattern secrets from indexed free-text before emission (D-08).
     model::scrub_indexed(&mut records);
     model::write_ndjson(&records, w)
+}
+
+/// Pinpoint the verbatim bytes of the transcript line whose `uuid` matches, for
+/// hit resolution (D-08, QRY-03). Returns the ORIGINAL raw line bytes, never a
+/// parsed-then-reserialized value.
+///
+/// VERBATIM CONSTRAINT: this crate's `serde_json` has no `preserve_order`, so a
+/// `serde_json::Value` object is a `BTreeMap` that re-emits keys alphabetically -
+/// a Claude Code transcript line (`type`/`uuid`/`timestamp`/`message` order) would
+/// round-trip to DIFFERENT bytes and fail the byte-for-byte QRY-03 criterion. So
+/// each line is parsed ONLY far enough to read its `uuid`, and the untouched raw
+/// slice of the first matching line is returned. No `scrub_indexed` is ever
+/// applied, so the bytes are verbatim (unscrubbed).
+pub fn pinpoint(generation: &[u8], uuid: &str) -> Option<Vec<u8>> {
+    /// Reads just the `uuid` field; every other transcript field is ignored.
+    #[derive(serde::Deserialize)]
+    struct UuidOnly {
+        uuid: Option<String>,
+    }
+
+    for line in generation.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(UuidOnly { uuid: Some(line_uuid) }) = serde_json::from_slice::<UuidOnly>(line) {
+            if line_uuid == uuid {
+                return Some(line.to_vec());
+            }
+        }
+    }
+    None
 }
 
 /// Read the parent session dir's generations plus every nested subagent

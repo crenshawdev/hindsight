@@ -7,6 +7,7 @@
 pub mod exact;
 pub mod keyword;
 pub mod ranked;
+pub mod resolve;
 pub mod vector;
 
 use anyhow::Result;
