@@ -130,60 +130,232 @@ pub fn run(cfg: &Config, dump_profiles: bool) -> Result<()> {
         )
         .context("clearing stale-version vectors before drain")?;
 
-    let embedded_at = now_rfc3339();
     let total = units.len();
-    let mut skipped = 0usize;
-    let mut embedded = 0usize;
 
-    for unit in &units {
-        // Skip if this unit is already embedded under the CURRENT version. The
-        // atomic vector+ledger commit below guarantees this check is exact: a
-        // ledger stamp exists only if its vector landed.
-        let already: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM embed_ledger
-                 WHERE unit_kind = ?1 AND source_id = ?2 AND embedder_version = ?3",
-                rusqlite::params![unit.unit_kind, unit.source_id, embedder_version],
-                |r| r.get(0),
-            )
-            .optional()
-            .context("checking embed_ledger for an already-embedded unit")?;
-        if already.is_some() {
-            skipped += 1;
-            continue;
-        }
+    // Open a run record (D-07): `--status` reads the latest row to tell a live
+    // *running* drain (fresh heartbeat) from a *stalled* one (stale heartbeat) and
+    // reports progress. `pid` is this process id so a killed drain is nameable.
+    let now = now_secs();
+    conn.execute(
+        "INSERT INTO embed_run
+            (started_at, heartbeat_at, pid, state, total, embedded, skipped, failed)
+         VALUES (?1, ?1, ?2, 'running', ?3, 0, 0, 0)",
+        rusqlite::params![now, std::process::id() as i64, total as i64],
+    )
+    .context("inserting embed_run record")?;
+    let run_id = conn.last_insert_rowid();
 
-        let vector = ollama::embed_document(&cfg.embed, &unit.text)
-            .with_context(|| format!("embedding {} unit {}", unit.unit_kind, unit.source_id))?;
-        let blob = vector_blob(&vector);
+    // Continue-on-error drain (D-06): a single embed failure is caught, recorded,
+    // and counted; the drain proceeds to the next unit rather than aborting.
+    let counts = drain(&mut conn, &units, &embedder_version, run_id, |u| {
+        ollama::embed_document(&cfg.embed, &u.text)
+    })?;
 
-        // Vector insert and ledger stamp commit together: a crash lands both or
-        // neither, so there is no window where a vector exists without its stamp.
-        let tx = conn.transaction().context("beginning per-unit embed tx")?;
-        tx.execute(
-            "INSERT INTO vec_embedding(embedding_coarse, embedding, project, unit_kind, source_id)
-             VALUES (vec_quantize_binary(?1), ?1, ?2, ?3, ?4)",
-            rusqlite::params![blob, unit.project, unit.unit_kind, unit.source_id],
-        )
-        .context("inserting vec_embedding row")?;
-        tx.execute(
-            "INSERT OR REPLACE INTO embed_ledger(unit_kind, source_id, embedder_version, embedded_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![unit.unit_kind, unit.source_id, embedder_version, embedded_at],
-        )
-        .context("stamping embed_ledger row")?;
-        tx.commit().context("committing per-unit embed tx")?;
-        embedded += 1;
-    }
+    // Terminal state for the run (D-07): done with final counts. A `--status` read
+    // after this classifies as done (or "done with N failed" if `failed > 0`).
+    conn.execute(
+        "UPDATE embed_run SET state = 'done', heartbeat_at = ?1,
+             embedded = ?2, skipped = ?3, failed = ?4 WHERE id = ?5",
+        rusqlite::params![
+            now_secs(),
+            counts.embedded as i64,
+            counts.skipped as i64,
+            counts.failed as i64,
+            run_id
+        ],
+    )
+    .context("marking embed_run done")?;
 
     tracing::info!(
         total,
-        skipped,
-        embedded,
+        skipped = counts.skipped,
+        embedded = counts.embedded,
+        failed = counts.failed,
         stale_cleared,
         "embed drain complete"
     );
     Ok(())
+}
+
+/// Give-up cap (D-06): a unit whose ledger row is `'failed'` with this many
+/// attempts is treated as a permanent failure and skipped, so a deterministically
+/// failing unit stops burning an Ollama call on every hook-fired drain. A
+/// `'failed'` row under the cap is retried.
+const MAX_EMBED_ATTEMPTS: i64 = 5;
+
+/// Stale-heartbeat threshold in seconds (D-07): a `running` run whose
+/// `heartbeat_at` is older than this reads as *stalled* rather than *running*. Read
+/// by the `--status` classifier (status.rs). Chosen well above a normal single
+/// embed at this model and corpus, so only a pathological stall trips it.
+pub const STALE_HEARTBEAT_SECS: i64 = 120;
+
+/// Running tally a drain returns for the run record's terminal counts.
+struct DrainCounts {
+    embedded: usize,
+    skipped: usize,
+    failed: usize,
+}
+
+/// The testable drain core (D-06, D-07): walk `units`, skip already-done units and
+/// permanently-failed ones, call `embed_fn` for the rest, and land each result in
+/// the ledger - a vector plus a `'done'` stamp on success, a `'failed'` row with the
+/// error string on failure - refreshing the run's heartbeat and counts around every
+/// unit. `embed_fn` is injected so a test can drive the error path without Ollama.
+fn drain(
+    conn: &mut rusqlite::Connection,
+    units: &[profile::ProfileUnit],
+    embedder_version: &str,
+    run_id: i64,
+    mut embed_fn: impl FnMut(&profile::ProfileUnit) -> Result<Vec<f32>>,
+) -> Result<DrainCounts> {
+    let mut skipped = 0usize;
+    let mut embedded = 0usize;
+    let mut failed = 0usize;
+
+    for unit in units {
+        // Skip check (D-06): a `'done'` row under the current version is already
+        // embedded (the atomic vector+ledger commit makes this exact), and a
+        // `'failed'` row at the attempts cap is a permanent failure counted as such
+        // and not retried. A `'failed'` row under the cap falls through to a retry.
+        let existing: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT status, attempts FROM embed_ledger
+                 WHERE unit_kind = ?1 AND source_id = ?2 AND embedder_version = ?3",
+                rusqlite::params![unit.unit_kind, unit.source_id, embedder_version],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .context("checking embed_ledger for unit status")?;
+        if let Some((status, attempts)) = &existing {
+            if status == "done" {
+                skipped += 1;
+                continue;
+            }
+            if status == "failed" && *attempts >= MAX_EMBED_ATTEMPTS {
+                failed += 1;
+                continue;
+            }
+        }
+
+        // Heartbeat immediately before and after the (blocking) embed call so a
+        // live drain reads as running even across a slow unit (D-07).
+        touch_heartbeat(conn, run_id)?;
+        let result = embed_fn(unit);
+        touch_heartbeat(conn, run_id)?;
+
+        let embedded_at = now_rfc3339();
+        match result {
+            Ok(vector) => {
+                let blob = vector_blob(&vector);
+                // Vector insert and ledger stamp commit together: a crash lands
+                // both or neither, so no vector ever exists without its stamp.
+                let tx = conn.transaction().context("beginning per-unit embed tx")?;
+                tx.execute(
+                    "INSERT INTO vec_embedding
+                        (embedding_coarse, embedding, project, unit_kind, source_id)
+                     VALUES (vec_quantize_binary(?1), ?1, ?2, ?3, ?4)",
+                    rusqlite::params![blob, unit.project, unit.unit_kind, unit.source_id],
+                )
+                .context("inserting vec_embedding row")?;
+                upsert_ledger(&tx, unit, embedder_version, &embedded_at, "done", None)?;
+                tx.commit().context("committing per-unit embed tx")?;
+                embedded += 1;
+            }
+            Err(e) => {
+                // Continue-on-error (D-06): record the failure, write no vector, and
+                // move on. The `attempts` counter accumulates via the upsert so the
+                // give-up cap can retire a deterministically failing unit.
+                let msg = format!("{e:#}");
+                upsert_ledger(
+                    conn,
+                    unit,
+                    embedder_version,
+                    &embedded_at,
+                    "failed",
+                    Some(&msg),
+                )?;
+                failed += 1;
+            }
+        }
+
+        update_run_counts(conn, run_id, embedded, skipped, failed)?;
+    }
+
+    Ok(DrainCounts {
+        embedded,
+        skipped,
+        failed,
+    })
+}
+
+/// Upsert one `embed_ledger` row (D-06, D-07). `INSERT ... ON CONFLICT DO UPDATE`
+/// (not `INSERT OR REPLACE`, which deletes the prior row and loses the count) so
+/// `attempts` accumulates across retries: a fresh insert records attempt 1, a
+/// conflict increments the stored count. `last_error` is NULL on success.
+fn upsert_ledger(
+    conn: &rusqlite::Connection,
+    unit: &profile::ProfileUnit,
+    embedder_version: &str,
+    embedded_at: &str,
+    status: &str,
+    last_error: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO embed_ledger
+            (unit_kind, source_id, embedder_version, embedded_at, status, attempts, last_error)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)
+         ON CONFLICT(unit_kind, source_id) DO UPDATE SET
+             status = excluded.status,
+             embedder_version = excluded.embedder_version,
+             embedded_at = excluded.embedded_at,
+             attempts = attempts + 1,
+             last_error = excluded.last_error",
+        rusqlite::params![
+            unit.unit_kind,
+            unit.source_id,
+            embedder_version,
+            embedded_at,
+            status,
+            last_error
+        ],
+    )
+    .context("upserting embed_ledger row")?;
+    Ok(())
+}
+
+/// Refresh a run's heartbeat to now (D-07). A no-op UPDATE if `run_id` is absent.
+fn touch_heartbeat(conn: &rusqlite::Connection, run_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE embed_run SET heartbeat_at = ?1 WHERE id = ?2",
+        rusqlite::params![now_secs(), run_id],
+    )
+    .context("refreshing embed_run heartbeat")?;
+    Ok(())
+}
+
+/// Write the running counts onto a run record (D-07), cheap at this corpus size.
+fn update_run_counts(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+    embedded: usize,
+    skipped: usize,
+    failed: usize,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE embed_run SET embedded = ?1, skipped = ?2, failed = ?3 WHERE id = ?4",
+        rusqlite::params![embedded as i64, skipped as i64, failed as i64, run_id],
+    )
+    .context("updating embed_run counts")?;
+    Ok(())
+}
+
+/// Current unix epoch seconds. The `embed_run` heartbeat/started stamps are integer
+/// epoch seconds so the `--status` classifier can do plain arithmetic on them.
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Serialize an f32 slice to the little-endian byte blob sqlite-vec expects for a
@@ -302,5 +474,102 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0, "no vectors written while the lock was held");
         drop(guard);
+    }
+
+    /// A hand-built profile unit; `drain` takes `&[ProfileUnit]` so a test can
+    /// exercise the loop without going through `assemble` or a loaded corpus.
+    fn unit(kind: &str, id: &str) -> profile::ProfileUnit {
+        profile::ProfileUnit {
+            unit_kind: kind.to_string(),
+            source_id: id.to_string(),
+            project: "proj".to_string(),
+            text: format!("text {id}"),
+        }
+    }
+
+    /// Insert a `running` run record and return its id so `drain`'s heartbeat and
+    /// count UPDATEs have a row to hit.
+    fn open_run(conn: &rusqlite::Connection, total: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO embed_run
+                (started_at, heartbeat_at, pid, state, total, embedded, skipped, failed)
+             VALUES (0, 0, 0, 'running', ?1, 0, 0, 0)",
+            rusqlite::params![total],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// D-06: a single unit's embed error is caught, recorded, and skipped while the
+    /// drain finishes the rest; a second drain re-embeds none of the already-done
+    /// units. (Acceptance criterion 5, in-process half.)
+    #[test]
+    fn drain_records_a_failure_and_continues() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        let mut conn = open_db(&cfg.db_path()).unwrap();
+
+        let units = vec![unit("event", "1"), unit("event", "2"), unit("event", "3")];
+        let ev = "m/profile-1";
+        let run_id = open_run(&conn, units.len() as i64);
+
+        // embed_fn fails only on source_id "2"; the other two succeed with a
+        // full-width fake vector.
+        let counts = drain(&mut conn, &units, ev, run_id, |u| {
+            if u.source_id == "2" {
+                Err(anyhow::anyhow!("simulated ollama failure"))
+            } else {
+                Ok(vec![0.1_f32; ollama::EMBED_DIMS])
+            }
+        })
+        .unwrap();
+
+        assert_eq!(counts.embedded, 2, "two units embedded");
+        assert_eq!(counts.failed, 1, "one unit failed");
+
+        // The failing unit: a `failed` ledger row with a non-null error and NO vector.
+        let (status, last_error): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, last_error FROM embed_ledger WHERE source_id = '2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert!(last_error.is_some(), "failed unit records last_error");
+        let vec2: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM vec_embedding WHERE source_id = '2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(vec2, 0, "failed unit wrote no vector");
+
+        // The successful units carry `done` rows.
+        for id in ["1", "3"] {
+            let s: String = conn
+                .query_row(
+                    "SELECT status FROM embed_ledger WHERE source_id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(s, "done", "unit {id} is done");
+        }
+
+        // A second drain never calls `embed_fn` for the already-done units.
+        let run2 = open_run(&conn, units.len() as i64);
+        let mut called = Vec::new();
+        let counts2 = drain(&mut conn, &units, ev, run2, |u| {
+            called.push(u.source_id.clone());
+            Ok(vec![0.2_f32; ollama::EMBED_DIMS])
+        })
+        .unwrap();
+        assert_eq!(counts2.skipped, 2, "the two done units are skipped");
+        assert!(
+            !called.contains(&"1".to_string()) && !called.contains(&"3".to_string()),
+            "embed_fn is not called for already-done units"
+        );
     }
 }
