@@ -54,6 +54,9 @@ enum Command {
         /// drain. This is the hook-fired entrypoint (D-01), distinct from `poke`.
         #[arg(long)]
         detach: bool,
+        /// Report drain status from the DB and exit without embedding (D-07).
+        #[arg(long)]
+        status: bool,
     },
 }
 
@@ -68,7 +71,8 @@ fn main() -> ExitCode {
         Command::Embed {
             dump_profiles,
             detach,
-        } => report(embed_run(dump_profiles, detach)),
+            status,
+        } => report(embed_run(dump_profiles, detach, status)),
         // D-05: PreCompact fails loud and blocks compaction with exit 2 on any error.
         Command::Precompact => match precompact::run() {
             Ok(()) => ExitCode::SUCCESS,
@@ -87,10 +91,11 @@ fn load_stream() -> anyhow::Result<()> {
 }
 
 /// Assemble synthetic profiles from the loaded index and embed them into the
-/// vector store (or dump them when `dump_profiles` is set). With `detach`, spawn a
-/// detached child to run the drain and return immediately (D-01).
-fn embed_run(dump_profiles: bool, detach: bool) -> anyhow::Result<()> {
-    embed::run(&config::Config::load()?, dump_profiles, detach)
+/// vector store (or dump them when `dump_profiles` is set, or report drain status
+/// when `status` is set). With `detach`, spawn a detached child to run the drain and
+/// return immediately (D-01).
+fn embed_run(dump_profiles: bool, detach: bool, status: bool) -> anyhow::Result<()> {
+    embed::run(&config::Config::load()?, dump_profiles, detach, status)
 }
 
 fn report(result: anyhow::Result<()>) -> ExitCode {

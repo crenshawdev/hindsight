@@ -15,6 +15,7 @@
 
 pub mod ollama;
 pub mod profile;
+pub mod status;
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -114,10 +115,20 @@ fn spawn_detached(program: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Open the store, assemble profile units, and either dump them (D-11) or drain
-/// the queue into `vec_embedding`, skipping already-embedded units (D-06). With
-/// `detach` set, self-detach a child to run the drain and return immediately (D-01).
-pub fn run(cfg: &Config, dump_profiles: bool, detach: bool) -> Result<()> {
+/// Open the store, assemble profile units, and either dump them (D-11), report
+/// drain status (D-07), or drain the queue into `vec_embedding`, skipping
+/// already-embedded units (D-06). With `detach` set, self-detach a child to run the
+/// drain and return immediately (D-01).
+pub fn run(cfg: &Config, dump_profiles: bool, detach: bool, status: bool) -> Result<()> {
+    // `--status` is a read-only reporter; combining it with a mode that writes or
+    // detaches is a contradiction, so reject it up front (D-07).
+    if status && (detach || dump_profiles) {
+        bail!("--status cannot be combined with --detach or --dump-profiles (it only reads)");
+    }
+    if status {
+        return status::report(cfg);
+    }
+
     // `--dump-profiles` is a foreground inspection sink; detaching it would send its
     // NDJSON to /dev/null in a child, which is never what the caller wants.
     if detach && dump_profiles {
@@ -400,7 +411,7 @@ fn update_run_counts(
 
 /// Current unix epoch seconds. The `embed_run` heartbeat/started stamps are integer
 /// epoch seconds so the `--status` classifier can do plain arithmetic on them.
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -423,9 +434,17 @@ fn vector_blob(v: &[f32]) -> Vec<u8> {
 fn now_rfc3339() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let days = (secs / 86_400) as i64;
+    rfc3339_from_secs(secs)
+}
+
+/// Format an arbitrary unix-epoch-seconds value as an RFC3339 UTC string. Shared
+/// with `status.rs` so it can render an `embed_run`'s stored `started_at` /
+/// `heartbeat_at` stamps for display (D-07).
+pub(crate) fn rfc3339_from_secs(secs: i64) -> String {
+    let secs = secs.max(0);
+    let days = secs / 86_400;
     let rem = secs % 86_400;
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     let (y, m, d) = civil_from_days(days);
@@ -516,7 +535,7 @@ mod tests {
             LockOutcome::AlreadyHeld => panic!("expected to acquire the lock first"),
         };
 
-        run(&cfg, false, false).expect("run returns Ok(()) when the drain lock is held");
+        run(&cfg, false, false, false).expect("run returns Ok(()) when the drain lock is held");
 
         let conn = open_db(&cfg.db_path()).unwrap();
         let n: i64 = conn
@@ -667,8 +686,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = test_config(tmp.path());
         assert!(
-            run(&cfg, true, true).is_err(),
+            run(&cfg, true, true, false).is_err(),
             "--detach + --dump-profiles must error"
+        );
+    }
+
+    /// D-07: `--status` combined with `--detach` (or `--dump-profiles`) is rejected;
+    /// the reporter only reads.
+    #[test]
+    fn status_with_other_modes_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config(tmp.path());
+        assert!(
+            run(&cfg, false, true, true).is_err(),
+            "--status + --detach must error"
+        );
+        assert!(
+            run(&cfg, true, false, true).is_err(),
+            "--status + --dump-profiles must error"
         );
     }
 }
