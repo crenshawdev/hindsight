@@ -1,6 +1,6 @@
 # State
 
-Phase: 4 of 7 (Fuzzy)
-Status: phase complete
-Next: /cad-context 5
+Phase: 5 of 7 (Embed delivery)
+Status: planned
+Next: /cad-execute 5
 Updated: 2026-07-22
