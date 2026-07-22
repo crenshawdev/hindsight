@@ -28,6 +28,11 @@
 - [ ] (phase 5) Human-verify: two concurrent `hindsight embed` runs produce no duplicate `(unit_kind, source_id)` rows, the second logs "already running" and exits 0, and a unit added after the lock releases is embedded by the next run
 - [ ] (phase 5) Doc-sync: `docs/STATUS.md:28` still summarizes ADR 0004 as "opportunistic GPU schedule", now stale against ADR 0013's hook-triggered always-GPU delivery - refresh STATUS
 - [ ] (phase 5) `src/archive.rs:57` dead-code warning (`Outcome` variant field `path` never read); pre-existing, surfaced by the build - clean up or wire the field
+- [ ] (phase 6) Human-verify (needs live Claude Code MCP client): `claude mcp add hindsight -- <path>/hindsight mcp`, restart, confirm a recall tool call returns results for a seeded query. In-process handler test already passes
+- [ ] (phase 6) [low, diff review] `src/query/vector.rs` two-stage-recall test does not truly exercise the `coarse_k` guard (near row is both Hamming- and cosine-nearest in a 2-row table); construct a true cosine-neighbor that is NOT Hamming-nearest, crowded out under a tight pool
+- [ ] (phase 6) [low, diff review] `hindsight search <terms>` with multiple unquoted words is rejected by clap (positional is a single `Option<String>`); Must-be-true #2 runs only when quoted - consider a trailing var-arg joining tokens
+- [ ] (phase 6) Optional CLI `--resolve` affordance not added (MCP `resolve` tool is the primary caller, plan-permitted); wire it if a CLI resolve path is wanted
+- [ ] (phase 6) 4 benign `field never read` warnings (`rank`/`project`/`distance` pub hit-struct fields RRF orders on via SQL, `tool_router` macro-accessed); revisit if pub API is trimmed
 
 ## Seeds
 
