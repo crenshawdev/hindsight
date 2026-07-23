@@ -128,8 +128,8 @@ impl Config {
     }
 
     /// The rebuildable SQLite index lives under `base_dir/index` (D-09, ARC-02:
-    /// never the volume root). Phase 5 (query) and Phase 6 (backfill) open this
-    /// same path.
+    /// never the volume root). Phase 6 (query) and Phase 7 (backfill and cutover)
+    /// open this same path.
     pub fn index_dir(&self) -> PathBuf {
         self.base_dir.join("index")
     }
