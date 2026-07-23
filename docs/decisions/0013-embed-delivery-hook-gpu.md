@@ -35,7 +35,17 @@ with `setsid` into a new session and process group, nulls its three standard str
 returns at once so the hook is not blocked and Claude Code's reaping of the hook process group does not
 take the drain down with it. This is distinct from `hindsight poke`, which only writes one byte to the
 capture-daemon socket. The drain runs as this detached process, never inside the capture daemon, so the
-daemon's 15-minute idle self-terminate contract is untouched.
+daemon's 15-minute idle self-terminate contract is untouched. The cutover in
+[ADR 0014](0014-incremental-ingest-and-cutover.md) wires the session hooks to `hindsight ingest` rather
+than to `hindsight embed --detach` directly; ingest is what fires `--detach`, and only when a session
+actually changed, so a session that added nothing spawns no drain.
+
+**Batched requests.** Each request pins full GPU offload; the drain sends documents to `/api/embed` in
+batches (`EMBED_BATCH_SIZE`, 32) with an array `input`, one forward pass per request instead of one
+round-trip per unit. On the real corpus that took the drain from about 27 percent GPU utilization to 94
+percent, because the card was no longer idling between per-unit requests. A whole-batch failure falls
+back to embedding each unit alone, so one poison input fails by itself rather than failing its whole
+batch and accruing give-up attempts on its neighbors.
 
 **Always GPU, no fallback.** Every embed request pins `options.num_gpu` high enough to force full GPU
 offload. There is no CPU path and no placement decision to make. Deleting the request option entirely

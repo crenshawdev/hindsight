@@ -220,10 +220,22 @@ fn assemble_artifacts(conn: &Connection, units: &mut Vec<ProfileUnit>) -> Result
 
 /// Prose chunks (D-08): one unit per indexed-grain event carrying non-null text.
 /// `project` is resolved by joining the event's `session_id` to `session`.
+///
+/// `source_id` is `{uuid}:{ordinal}`, NOT the row's autoincrement `id`. The id is
+/// reassigned every time incremental ingest deletes and re-inserts a session
+/// (`ingest_session`), which would orphan every event's embed-ledger stamp and force
+/// a full re-embed on each hook-driven re-ingest (Phase 7 regression). The uuid is
+/// stable across re-ingest but not unique - a multi-block turn emits several indexed
+/// events sharing one uuid - so a deterministic per-uuid ordinal (`ROW_NUMBER` over
+/// the same indexed-text population, ordered by id) makes the key unique AND stable.
+/// The query side computes the identical expression: `vector.rs`'s TimeFilter for
+/// the window candidate set and `ranked.rs`'s uuid-prefix resolution.
 fn assemble_events(conn: &Connection, units: &mut Vec<ProfileUnit>) -> Result<()> {
     let mut stmt = conn
         .prepare(
-            "SELECT CAST(e.id AS TEXT), s.project, e.text
+            "SELECT e.uuid || ':' || CAST(
+                 ROW_NUMBER() OVER (PARTITION BY e.uuid ORDER BY e.id) AS TEXT),
+                 s.project, e.text
              FROM event e
              JOIN session s ON s.session_id = e.session_id
              WHERE e.grain = 'indexed' AND e.text IS NOT NULL",

@@ -18,8 +18,12 @@ that one transcript's current bytes into the archive staging before returning, a
 normalizes it later. Synchronous, because a plain poke could lose the race, the rewrite could land
 before the daemon reads the file. Copying one file is trivially fast, and compaction fires rarely for
 me because I clear a session around twenty percent context and almost never compact, so the occasional
-brief block costs nothing and guarantees the pre-compaction bytes survive. This is the only hook beyond
-the session-start and session-end pokes.
+brief block costs nothing and guarantees the pre-compaction bytes survive. PreCompact stays exactly this
+across later phases; the session-start and session-end hooks did not. This ADR describes them as bare
+pokes, and the cutover in [ADR 0014](0014-incremental-ingest-and-cutover.md) moved them to run
+`hindsight ingest`, which sweeps, indexes the new session, and fires the embed drain, a superset of a
+poke. The poke-only sweep-trigger argument below still holds: the trigger is a session event, not a
+filesystem watch, whether the hook writes one byte or runs a full ingest.
 
 The snapshot fails loud and vetoes the compaction (exit 2) only when it holds bytes it could not
 persist, so the veto exists to protect a real capture. A source transcript that is not on disk when the
