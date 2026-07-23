@@ -1,6 +1,14 @@
 # 0010 - Backfill as a cold-start sweep
 
-Status: accepted
+Status: accepted (mechanics refined by [ADR 0014](0014-incremental-ingest-and-cutover.md))
+
+The principle here holds: backfill is not special machinery, it is the normal path run over an empty
+watermark, and it inherits idempotency and resumability for free. Two specifics below were refined once
+the code was real. The daemon's sweep only archives; the archive-to-index-to-embed orchestration this ADR
+attributes to "the normal pipeline" is `hindsight ingest`, added in [ADR 0014](0014-incremental-ingest-and-cutover.md),
+which is also the steady-state path, so backfill and live capture really are one command. And the
+embedding phase runs always on the GPU with no CPU fallback per [ADR 0013](0013-embed-delivery-hook-gpu.md),
+not the game-defer-then-CPU behavior described below.
 
 ## Context
 
@@ -23,9 +31,9 @@ archived. Bump retention first, then backfill, and nothing races.
 
 Backfill runs in the same two natural phases the pipeline always has. The mechanical phase, archive,
 parse, structural and keyword index, needs no GPU and finishes quickly, so exact and keyword recall
-over all of history are live almost immediately. The embedding phase drains behind it, deferring to a
-game and falling back to the CPU, so semantic recall fills in progressively. Both run newest-first,
-because recent work is the most likely to be recalled and should be ready first.
+over all of history are live almost immediately. The embedding phase drains behind it on the GPU, so
+semantic recall fills in progressively. Both run newest-first, because recent work is the most likely to
+be recalled and should be ready first.
 
 ## Alternatives considered
 

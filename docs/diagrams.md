@@ -8,8 +8,10 @@ Rendered with Mermaid, which GitHub displays inline.
 
 ## Component view
 
-Where the pieces live and how data moves between them. Solid arrows are data flow, the hook
-poke is control.
+Where the pieces live and how data moves between them. Solid arrows are data flow. The session
+hooks run `hindsight ingest`, which sweeps, indexes, and fires the embed drain; PreCompact
+snapshots one transcript straight to the archive; the poke-activated capture daemon is the
+archive-only path for a manual `hindsight poke`.
 
 ```mermaid
 flowchart TD
@@ -25,7 +27,8 @@ flowchart TD
         sock{{socket unit}}
     end
 
-    daemon[Capture daemon]
+    ingest[hindsight ingest\nsweep + index + fire drain\nsession-hook driven]
+    daemon[Capture daemon\npoke-activated, archive-only]
     embed[Embed job\nhook-triggered detached drain\ndrain-and-exit]
     archive[(Verbatim archive\ncompressed, generational\nDURABLE, never mutated)]
     index[(SQLite index\nSession / Event / Artifact / Mention\nFTS5 BM25 + sqlite-vec\nREBUILDABLE)]
@@ -34,48 +37,55 @@ flowchart TD
     mcp[MCP server\nrecall inside a session]
     cli[CLI\noperate + ground-truth search]
 
-    hooks -- poke --> sock
-    sock -- activates --> daemon
-    daemon -- sweep vs watermark --> tree
-    daemon -- verbatim copy --> archive
-    daemon -- normalize + scrub --> index
+    hooks -- SessionStart/End: run --> ingest
+    hooks -- PreCompact: snapshot --> archive
+    ingest -- sweep vs watermark --> tree
+    ingest -- verbatim copy --> archive
+    ingest -- normalize + scrub + load --> index
+    ingest -- fire detached drain --> embed
 
     embed -- read records --> index
     embed -- embed request --> ollama
     ollama -- vectors --> index
+
+    cli -- poke --> sock
+    sock -- activates --> daemon
+    daemon -- sweep vs watermark --> tree
+    daemon -- verbatim copy --> archive
 
     session -- recall --> mcp
     mcp -- query --> index
     mcp -- resolve artifact bytes --> archive
     cli -- query --> index
     cli -- rebuild from --> archive
-    cli -- status / poke --> daemon
+    cli -- status --> daemon
 ```
 
-## Capture sequence
+## Capture and ingest sequence
 
-One sweep, from a hook poke to data at rest. Backfill is this same sequence with an empty
-watermark, so every session looks new.
+One `hindsight ingest` pass, from a session hook to data at rest. Backfill is this same
+sequence over an empty watermark and an empty ingest ledger, so every session looks new.
 
 ```mermaid
 sequenceDiagram
     participant H as Session hook
-    participant S as systemd socket
-    participant D as Capture daemon
+    participant I as hindsight ingest
     participant T as Transcript tree
     participant A as Verbatim archive
     participant X as SQLite index
+    participant E as Embed drain
 
-    H->>S: poke (one byte)
-    S->>D: activate (or deliver to running daemon)
-    D->>T: stat-walk, diff against watermark
-    T-->>D: changed / new session files
-    Note over D,A: unchanged -> skip. grew -> re-copy generation.\nrewritten (compaction) -> new generation, old one kept.
-    D->>A: verbatim copy (never mutated)
-    D->>X: normalize, scrub secrets, upsert records + FTS
-    Note over D,X: exact + lexical recall live here already
-    Note over D,X: embedding is NOT here. A session hook fires a\nhook-triggered detached embed process that reads records and writes\nvectors, so a long drain never fights the daemon's idle exit.
-    D->>D: mark watermark, idle 15 min, then exit
+    H->>I: SessionStart/End runs `hindsight ingest`
+    I->>T: sweep: stat-walk, diff against watermark
+    T-->>I: changed / new session files
+    Note over I,A: unchanged -> skip. grew -> re-copy generation.\nrewritten (compaction) -> new generation, old one kept.
+    I->>A: verbatim copy (never mutated), advance watermark
+    Note over I: fingerprint each archived session vs ingest_ledger;\nunchanged sessions skipped
+    I->>X: normalize, scrub secrets, session-scoped replace of\nchanged sessions' records + FTS
+    Note over I,X: exact + lexical recall live here already
+    I->>E: fire `hindsight embed --detach` iff a session changed
+    Note over E: detached, always-GPU drain reads records and writes\nvectors, embedding only new units; semantic recall catches up
+    I->>I: update ingest_ledger fingerprints
 ```
 
 ## Query sequence

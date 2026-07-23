@@ -223,9 +223,9 @@ burned down.
 The memory surfaces as an MCP server, so the model can call it mid-session the moment recall is
 worth most, right when I am about to solve something I might have already solved. There is a CLI
 too, but not really for searching, I live inside sessions so the MCP path covers that. The CLI is
-for operating the thing, running the backfill, checking that the daemon is keeping up, rebuilding
-the index, and for a plain no-model search when I want to see exactly what is in there without a
-ranking algorithm's opinion in the way.
+for operating the thing, running an ingest pass by hand, checking that capture is keeping up,
+rebuilding the index, and for a plain no-model search when I want to see exactly what is in there
+without a ranking algorithm's opinion in the way.
 
 ## The parts that stayed small
 
@@ -246,11 +246,13 @@ it cannot answer "find the script" even in principle. Its old summaries stay whe
 stop feeding it and build from the raw transcripts instead, inheriting none of its lossiness. See
 [ADR 0009](decisions/0009-replace-prior-memory-tool.md).
 
-And the first-day backfill is not special code, it is the daemon's normal sweep with an empty
-watermark, so every session looks new and the same pipeline runs over all of history. Idempotent
-and resumable for free, since the watermark already knows how to skip what is done. The one ordering
-rule is to raise the retention window before the first run, so nothing ages out in the gap between
-starting and finishing. See [ADR 0010](decisions/0010-backfill-coldstart-sweep.md).
+And the first-day backfill is not special code, it is `hindsight ingest` run over an empty
+watermark and an empty ingest ledger, so every session looks new and the same command that folds
+in one new session at the end of a work block runs over all of history the first time. Idempotent
+and resumable for free, since the watermark and the ledger both know how to skip what is done. The
+one ordering rule is to raise the retention window before the first run, so nothing ages out in the
+gap between starting and finishing. See [ADR 0010](decisions/0010-backfill-coldstart-sweep.md) and
+[ADR 0014](decisions/0014-incremental-ingest-and-cutover.md).
 
 ## Where it stands
 

@@ -1,6 +1,13 @@
 # 0004 - Embedder choice and GPU scheduling
 
-Status: accepted
+Status: accepted (delivery specifics superseded by [ADR 0013](0013-embed-delivery-hook-gpu.md))
+
+The embedder choice below still stands: qwen3-embedding:8b via Ollama, 4096 dimensions, the dimension
+pin, the `ureq` transport, and the resumable ledger. The **delivery** it describes, a systemd timer, the
+`nvidia-smi` GPU-busy defer, and the CPU fallback, is reversed by [ADR 0013](0013-embed-delivery-hook-gpu.md):
+embedding is now hook-triggered, always on the GPU with no CPU path, and detached, and the timer and
+`gpu.rs` are gone from the tree. Read the Decision below for the model and transport; read ADR 0013 for
+how a drain is actually triggered and run.
 
 ## Context
 

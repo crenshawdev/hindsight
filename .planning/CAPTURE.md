@@ -33,6 +33,7 @@
 - [ ] (phase 6) [low, diff review] `hindsight search <terms>` with multiple unquoted words is rejected by clap (positional is a single `Option<String>`); Must-be-true #2 runs only when quoted - consider a trailing var-arg joining tokens
 - [ ] (phase 6) Optional CLI `--resolve` affordance not added (MCP `resolve` tool is the primary caller, plan-permitted); wire it if a CLI resolve path is wanted
 - [ ] (phase 6) 4 benign `field never read` warnings (`rank`/`project`/`distance` pub hit-struct fields RRF orders on via SQL, `tool_router` macro-accessed); revisit if pub API is trimmed
+- [ ] (phase 7) [medium, from re-embed token-cost measurement] Profile units can far exceed the embedder's 4096-token (~16k char) context, so Ollama silently truncates them: `--dump-profiles` measured artifacts up to 117,778 chars (avg 1,766) and events up to 166,813 chars (avg 435). Two costs: wasted transfer of text that is discarded, and a long artifact's vector reflects only its first ~16k chars, not the whole artifact. Fix in `src/embed/profile.rs` (`assemble_artifacts` / `assemble_events`): cap profile text to the context window before embedding, and consider chunking a large artifact into several units instead of truncating so the whole thing is represented. Dominates the drain's slow front phase (artifact/entity units are ~4x the event-unit length)
 
 ## Seeds
 
