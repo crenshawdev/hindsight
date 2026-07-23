@@ -186,26 +186,26 @@ fn vector_entries(
     let mut out = Vec::new();
     for hit in hits {
         match hit.unit_kind.as_str() {
-            // Synthetic event.id -> (event.session_id, event.uuid).
+            // Vector event source_id is `{uuid}:{ordinal}` (profile.rs); the uuid
+            // prefix is the resolution key (a uuid has no ':' so the split is exact).
+            // Map it to the session; the resolve target stays the bare uuid, matching
+            // the FTS-origin event path (source_id is already the uuid there).
             "event" => {
-                let id: i64 = match hit.source_id.parse() {
-                    Ok(id) => id,
-                    Err(_) => continue,
-                };
-                let row: Option<(String, String)> = conn
+                let uuid = hit.source_id.split(':').next().unwrap_or(&hit.source_id);
+                let session_id: Option<String> = conn
                     .query_row(
-                        "SELECT session_id, uuid FROM event WHERE id = ?1",
-                        rusqlite::params![id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
+                        "SELECT session_id FROM event WHERE uuid = ?1 LIMIT 1",
+                        rusqlite::params![uuid],
+                        |r| r.get(0),
                     )
                     .optional()
-                    .context("mapping vector event id to session")?;
-                if let Some((session_id, uuid)) = row {
+                    .context("mapping vector event uuid to session")?;
+                if let Some(session_id) = session_id {
                     out.push((
                         session_id,
                         ResolveTarget {
                             source_type: "event".to_string(),
-                            source_id: uuid,
+                            source_id: uuid.to_string(),
                         },
                     ));
                 }
@@ -441,14 +441,15 @@ mod tests {
 
         seed_session(&conn, "s1", "proj");
         seed_session(&conn, "s2", "proj");
-        // s1 ranked by the vector event arm.
-        let e1 = seed_event(&conn, "ev1", "s1", "2026-07-21T10:00:00Z", "event body");
+        // s1 ranked by the vector event arm. Its vector carries the `{uuid}:{ordinal}`
+        // key profile.rs now emits (ev1's first/only indexed event -> "ev1:1").
+        seed_event(&conn, "ev1", "s1", "2026-07-21T10:00:00Z", "event body");
         // s2 ranked by the vector entity arm (its representative event uuid = ev2).
         seed_event(&conn, "ev2", "s2", "2026-07-21T11:00:00Z", "entity body");
         seed_mention(&conn, "foo", "file", "ev2", "s2", "proj", "2026-07-21T11:00:00Z");
 
         let qvec = vec![0.25_f32; DIM];
-        insert_vec(&conn, &qvec, "proj", "event", &e1.to_string());
+        insert_vec(&conn, &qvec, "proj", "event", "ev1:1");
         insert_vec(&conn, &qvec, "proj", "entity", "file:foo");
 
         let result = ranked_search(&conn, "zzz-no-keyword-match", None, None, None, |_q| Ok(qvec.clone()))

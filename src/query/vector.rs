@@ -53,17 +53,28 @@ pub struct TimeFilter {
 impl TimeFilter {
     /// Compute the candidate set for an RFC3339 `since`/`until` window from the
     /// relational timestamp columns (D-06), keyed to the vector table's id space:
-    /// event -> `CAST(event.id AS TEXT)`; artifact -> `artifact_id` whose source
-    /// event is in range; entity -> `{entity_type}:{entity}` with any
-    /// `mention.timestamp` in range.
+    /// event -> `{uuid}:{ordinal}` (profile.rs's prose-chunk key); artifact ->
+    /// `artifact_id` whose source event is in range; entity -> `{entity_type}:{entity}`
+    /// with any `mention.timestamp` in range.
     pub fn compute(conn: &Connection, since: Option<&str>, until: Option<&str>) -> Result<Self> {
         let mut ids = HashSet::new();
 
-        // event units: synthetic event.id, keyed as text (profile.rs prose chunk).
+        // event units: `{uuid}:{ordinal}` keyed identically to profile.rs's
+        // assemble_events - the SAME indexed-text population and the SAME
+        // `ROW_NUMBER` per-uuid ordinal, so the window candidates line up exactly
+        // with the vectors that were embedded. The ordinal is computed in the inner
+        // query (over the full indexed-text set, unaffected by the outer window
+        // predicate collect_time_ids appends to `ts`).
         collect_time_ids(
             conn,
-            "SELECT CAST(id AS TEXT) FROM event WHERE timestamp IS NOT NULL",
-            "timestamp",
+            "SELECT source_id FROM (
+                 SELECT e.uuid || ':' || CAST(
+                     ROW_NUMBER() OVER (PARTITION BY e.uuid ORDER BY e.id) AS TEXT
+                 ) AS source_id, e.timestamp AS ts
+                 FROM event e
+                 WHERE e.grain = 'indexed' AND e.text IS NOT NULL
+             ) WHERE ts IS NOT NULL",
+            "ts",
             since,
             until,
             "event",

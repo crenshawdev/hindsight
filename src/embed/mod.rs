@@ -34,7 +34,13 @@ use crate::store::open_db;
 /// The profile-construction contract the stored vectors were built under. Bumped
 /// when the mechanical assembly in `profile.rs` changes shape, so a re-embed under
 /// a new profile version re-stamps the ledger and clears stale vectors.
-pub const PROFILE_SCHEMA_VERSION: &str = "1";
+///
+/// v2 (Phase 7): event units are re-keyed from the autoincrement `event.id` to a
+/// re-ingest-stable `{uuid}:{ordinal}`. The old id-keyed vectors are stale under the
+/// new scheme, so the version bump makes the next drain clear them and re-embed the
+/// corpus once under the stable keys; thereafter incremental ingest re-embeds only
+/// genuinely-new units instead of every re-ingested session.
+pub const PROFILE_SCHEMA_VERSION: &str = "2";
 
 /// The single-flight lock file under `state_dir()` (D-03). One drain at a time:
 /// an advisory `flock` on this file, released by the kernel on any process exit.
